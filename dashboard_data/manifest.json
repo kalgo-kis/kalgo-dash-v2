@@ -1,0 +1,67 @@
+{
+  "count": 5,
+  "bundled_count": 5,
+  "experiments": [
+    {
+      "experiment_id": "dashboard_trace_fold1",
+      "fold": "fold1",
+      "eval_start": "2008-01-01",
+      "eval_end": "2011-12-31",
+      "total_return": 0.961327,
+      "total_accounts": 6,
+      "blowup_count": 6,
+      "bank_end": 0.0,
+      "timestamp": null,
+      "bundled": true
+    },
+    {
+      "experiment_id": "dashboard_trace_fold2",
+      "fold": "fold2",
+      "eval_start": "2012-01-01",
+      "eval_end": "2015-12-31",
+      "total_return": 1.146823,
+      "total_accounts": 77,
+      "blowup_count": 77,
+      "bank_end": 4022.2,
+      "timestamp": null,
+      "bundled": true
+    },
+    {
+      "experiment_id": "dashboard_trace_fold3",
+      "fold": "fold3",
+      "eval_start": "2016-01-01",
+      "eval_end": "2019-12-31",
+      "total_return": 2.192816,
+      "total_accounts": 89,
+      "blowup_count": 88,
+      "bank_end": 2087.19,
+      "timestamp": null,
+      "bundled": true
+    },
+    {
+      "experiment_id": "dashboard_trace_fold4",
+      "fold": "fold4",
+      "eval_start": "2020-01-01",
+      "eval_end": "2021-12-31",
+      "total_return": 0.994021,
+      "total_accounts": 6,
+      "blowup_count": 6,
+      "bank_end": 11.78,
+      "timestamp": null,
+      "bundled": true
+    },
+    {
+      "experiment_id": "dashboard_trace_fold5",
+      "fold": "fold5",
+      "eval_start": "2022-01-01",
+      "eval_end": "2024-12-31",
+      "total_return": 1.756805,
+      "total_accounts": 46,
+      "blowup_count": 45,
+      "bank_end": 5039.99,
+      "timestamp": null,
+      "bundled": true
+    }
+  ],
+  "multifold_results": {}
+}

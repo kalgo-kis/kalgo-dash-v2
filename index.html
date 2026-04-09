@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kalgo Experiment Visualizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%2326a269'/><text x='8' y='12' font-family='monospace' font-size='11' font-weight='bold' text-anchor='middle' fill='white'>K</text></svg>">
+<link rel="stylesheet" href="dashboard.css">
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <h1>Kalgo Experiment Visualizer</h1>
+      <div class="subtitle">Fleet backtest results — EURGBP M1 grid strategy</div>
+    </div>
+    <div class="header-right">
+      <div class="status-chip" id="status-chip">loading…</div>
+    </div>
+  </header>
+
+  <div class="container">
+    <section class="selector-bar">
+      <label>Experiment</label>
+      <select id="experiment-select" class="large-select"></select>
+      <label>Fold</label>
+      <select id="fold-filter">
+        <option value="all">all folds</option>
+        <option value="fold1">fold1 (2008–2011 GFC)</option>
+        <option value="fold2">fold2 (2012–2015)</option>
+        <option value="fold3">fold3 (2016–2019 Brexit)</option>
+        <option value="fold4">fold4 (2020–2021 COVID)</option>
+        <option value="fold5">fold5 (2022–2024 rate hikes)</option>
+      </select>
+      <label>Sort</label>
+      <select id="sort-select">
+        <option value="bundled_first">bundled first, then return ↓</option>
+        <option value="tr_desc">total return ↓</option>
+        <option value="tr_asc">total return ↑</option>
+        <option value="recent">most recent</option>
+      </select>
+      <label class="checkbox-label">
+        <input type="checkbox" id="only-bundled" />
+        bundled only
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" id="compare-mode" />
+        compare
+      </label>
+      <select id="compare-select" class="large-select" style="display:none;"></select>
+      <button id="reset-zoom-btn">Reset Zoom</button>
+    </section>
+
+    <section class="multifold-overview" id="multifold-overview" style="display:none;">
+      <div class="multifold-header">
+        <span class="chart-title">Multi-Fold Overview</span>
+        <span class="multifold-mean" id="multifold-mean">Mean TR: —</span>
+      </div>
+      <div class="multifold-cards" id="multifold-cards"></div>
+    </section>
+
+    <section class="comparison-table" id="comparison-table" style="display:none;">
+      <div class="panel-title">Experiment Comparison</div>
+      <div id="comparison-body"></div>
+    </section>
+
+    <section class="summary-row">
+      <div class="summary-card">
+        <div class="card-title">Experiment</div>
+        <div class="card-value" id="hdr-experiment-id">—</div>
+        <div class="card-sub" id="hdr-fold-period">—</div>
+      </div>
+      <div class="summary-card">
+        <div class="card-title">Total Return</div>
+        <div class="card-value green" id="hdr-total-return">—</div>
+        <div class="card-sub" id="hdr-bank-range">—</div>
+      </div>
+      <div class="summary-card">
+        <div class="card-title">Accounts</div>
+        <div class="card-value" id="hdr-accounts">—</div>
+        <div class="card-sub" id="hdr-blowups">—</div>
+      </div>
+      <div class="summary-card">
+        <div class="card-title">Avg Lifetime</div>
+        <div class="card-value" id="hdr-lifetime">—</div>
+        <div class="card-sub" id="hdr-withdrawn">—</div>
+      </div>
+      <div class="summary-card warning" id="data-warning-card" style="display:none;">
+        <div class="card-title">⚠ Limited data</div>
+        <div class="card-sub" id="data-warning-text">This experiment has no per-account records.</div>
+      </div>
+    </section>
+
+    <section class="chart-section">
+      <div class="chart-header">
+        <span class="chart-title">EURGBP (M15) · Accounts overlay</span>
+        <span class="chart-legend">
+          <span class="leg-arrow green">&#9650;</span> profit
+          <span class="leg-arrow red">&#9650;</span> loss
+          <span class="leg-arrow gray">&#9650;</span> total loss
+          &nbsp;|&nbsp;
+          <span class="leg-arrow blue">&#9660;</span> buy
+          <span class="leg-arrow red">&#9660;</span> sell
+          <span class="leg-arrow orange">&#9660;</span> recovery
+          <span class="leg-arrow green">&#9660;</span> TP close
+          <span class="leg-sq gold">&#9632;</span> withdrawal
+          <span class="leg-dash gold">---</span> WAPP
+          <span class="leg-dash green">---</span> TP
+        </span>
+      </div>
+      <div id="price-chart" class="chart"></div>
+    </section>
+
+    <section class="chart-section">
+      <div class="chart-header">
+        <span class="chart-title">Fleet Savings Curve</span>
+        <span class="bank-toggles" id="bank-toggles">
+          <label class="bank-toggle"><input type="checkbox" id="toggle-savings" checked><span class="swatch savings"></span>Savings</label>
+          <label class="bank-toggle"><input type="checkbox" id="toggle-revivals" checked><span class="swatch revivals"></span>Revivals</label>
+          <label class="bank-toggle"><input type="checkbox" id="toggle-starting" checked><span class="swatch starting"></span>Starting cap</label>
+          <label class="bank-toggle"><input type="checkbox" id="toggle-total"><span class="swatch total"></span>Total</label>
+          <label class="bank-toggle"><input type="checkbox" id="toggle-bank"><span class="swatch bank"></span>Bank</label>
+        </span>
+      </div>
+      <div id="bank-chart" class="chart tall"></div>
+    </section>
+
+    <section class="bottom-row">
+      <div class="panel" id="stats-panel">
+        <div class="panel-title">Summary</div>
+        <div id="stats-body">Select an experiment</div>
+      </div>
+      <div class="panel wide" id="detail-panel">
+        <div class="panel-title">
+          <span>Account Detail</span>
+          <button id="close-detail-btn" style="display:none;">✕</button>
+        </div>
+        <div id="detail-body" class="placeholder">Click a deploy marker on the chart to inspect an account</div>
+      </div>
+    </section>
+
+    <section class="panel" id="config-panel">
+      <div class="panel-title">
+        <span>Policy Source</span>
+        <span class="muted" style="font-size:11px;font-weight:400;">
+          Note: current best policy.py only — older experiments' exact policies are not saved on disk
+        </span>
+      </div>
+      <pre id="policy-source">—</pre>
+    </section>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
+
