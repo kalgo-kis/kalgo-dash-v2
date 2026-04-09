@@ -241,9 +241,9 @@ function setupCharts() {
   });
 
   state.candleSeries = state.priceChart.addCandlestickSeries({
-    upColor: "#3a4050", downColor: "#2a2e38",
-    borderUpColor: "#4a5060", borderDownColor: "#3a3e48",
-    wickUpColor: "#4a5060", wickDownColor: "#3a3e48",
+    upColor: "#4a5568", downColor: "#2d3748",
+    borderUpColor: "#5a6578", borderDownColor: "#4a5060",
+    wickUpColor: "#5a6578", wickDownColor: "#4a5060",
     // EURGBP prices move in fractions of a pip — 5-decimal format is required
     // to read grid levels, spreads, and TP targets. The default 2-decimal
     // "stock" format hides everything below 0.01 which is useless for forex.
@@ -692,7 +692,7 @@ function showTraceOverlay(a) {
       const t = toUnix(ev.time); return t && Math.abs(t - basket.end) < 120;
     });
     const recoveryEntry = basket.entries.find(e => e.tag === "recovery");
-    const lineStart = recoveryEntry ? recoveryEntry.time_unix : lastEntry.time_unix;
+    const lineStart = recoveryEntry ? recoveryEntry.time_unix : firstEntry.time_unix;
 
     // --- Grid + recovery entry ticks ---
     for (const e of basket.entries) {
@@ -713,7 +713,7 @@ function showTraceOverlay(a) {
     const wappPrice = closeEv?.basket_wapp || lastEntry.wapp_after;
     if (wappPrice) {
       const wl = state.priceChart.addLineSeries({
-        color: bc.line, lineWidth: 1, lineStyle: 1, // dotted
+        color: bc.line, lineWidth: 2, lineStyle: 1, // dotted WAPP
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
       wl.setData([{ time: lineStart, value: wappPrice }, { time: basket.end, value: wappPrice }]);
@@ -724,7 +724,7 @@ function showTraceOverlay(a) {
     const tpPrice = closeEv?.tp_price;
     if (tpPrice && tpPrice > 0) {
       const tl = state.priceChart.addLineSeries({
-        color: bc.line, lineWidth: 1, lineStyle: 2, // dashed
+        color: bc.line, lineWidth: 2, lineStyle: 2, // dashed TP
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
       tl.setData([{ time: lineStart, value: tpPrice }, { time: basket.end, value: tpPrice }]);
