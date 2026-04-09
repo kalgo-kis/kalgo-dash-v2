@@ -716,7 +716,7 @@ function showTraceOverlay(a) {
       const t = toUnix(ev.time); return t && Math.abs(t - basket.end) < 120;
     });
     const recoveryEntry = basket.entries.find(e => e.tag === "recovery");
-    const lineStart = recoveryEntry ? recoveryEntry.time_unix : Math.max(firstEntry.time_unix, lastEntry.time_unix - 900 * 10);
+    const lineStart = recoveryEntry ? recoveryEntry.time_unix : Math.max(firstEntry.time_unix, lastEntry.time_unix - 900 * 25);
 
     const wappPrice = closeEv?.basket_wapp || lastEntry.wapp_after;
     if (wappPrice) {
@@ -725,6 +725,7 @@ function showTraceOverlay(a) {
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
       wl.setData([{ time: lineStart, value: wappPrice }, { time: basket.end, value: wappPrice }]);
+      wl.setMarkers([{ time: lineStart, position: "inBar", color: bc.line, shape: "square", text: "WAPP", size: 0 }]);
       state.tracePositionLines.push(wl);
     }
     const tpPrice = closeEv?.tp_price;
@@ -734,6 +735,7 @@ function showTraceOverlay(a) {
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
       tl.setData([{ time: lineStart, value: tpPrice }, { time: basket.end, value: tpPrice }]);
+      tl.setMarkers([{ time: lineStart, position: "inBar", color: bc.line, shape: "square", text: "TP", size: 0 }]);
       state.tracePositionLines.push(tl);
     }
   }
