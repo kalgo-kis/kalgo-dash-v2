@@ -766,17 +766,17 @@ function showTraceOverlay(a) {
       }
     }
   }
-  // Withdrawal: gold text above the candle, no tick line.
+  // Withdrawal: gold text floating above the price action (like the lots label).
+  const allPrices = entries.map(e => e.price).filter(Boolean);
+  const priceHigh = allPrices.length ? Math.max(...allPrices) : 0;
   for (const ev of (trace.withdrawal_events || [])) {
     const t15 = Math.floor(ev.time_unix / 900) * 900;
-    const near = entries.reduce((b, e) => Math.abs(e.time_unix - ev.time_unix) < Math.abs((b?.time_unix||0) - ev.time_unix) ? e : b, entries[0]);
-    const price = near?.price || 0;
-    if (price) {
+    if (priceHigh) {
       const ws = state.priceChart.addLineSeries({
         lineWidth: 0, priceLineVisible: false, lastValueVisible: false,
         crosshairMarkerVisible: false, color: "transparent",
       });
-      ws.setData([{ time: t15, value: price }]);
+      ws.setData([{ time: t15, value: priceHigh }]);
       ws.setMarkers([{ time: t15, position: "aboveBar", color: COLORS.gold, shape: "square", text: `wd $${Math.round(ev.amount)}`, size: 0 }]);
       state.tracePositionLines.push(ws);
     }
