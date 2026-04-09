@@ -366,45 +366,29 @@ function setupCharts() {
 }
 
 function buildMarkers(accounts) {
+  // Big picture: deploy markers (colored by outcome), blowup markers, recovery events.
+  // No basket close markers — those only appear in trace view.
   const markers = [];
   for (const a of accounts) {
     const dt = toUnix(a.deploy_time);
     if (dt != null) {
-      // Outcome strings emitted by bundle_experiment.py::classify():
-      //   survived       — still open at eval end (rare, ~1/fold)
-      //   blowup_profit  — blew up AFTER extracting more than stake (net > 0)
-      //   blowup_loss    — blew up with partial extraction (0 < withdrawn, net <= 0)
-      //   total_loss     — blew up without a single TP close (withdrawn == 0)
-      // Previously this only matched "profit" and fell everything else through to red,
-      // so ~68% of accounts (all blowup_profit + survived) were rendered as losses.
       const color = (a.outcome === "survived" || a.outcome === "blowup_profit") ? COLORS.green
                   : a.outcome === "total_loss" ? COLORS.gray
                   : COLORS.red;
       markers.push({
-        time: dt,
-        position: "belowBar",
-        color,
-        shape: "arrowUp",
-        text: `#${a.num}`,
+        time: dt, position: "belowBar", color,
+        shape: "arrowUp", text: `#${a.num}`,
         _kind: "deploy", _acct: a.num,
       });
     }
-    // Blowup marker — arrowDown so it mirrors the deploy arrow and can't be
-    // visually confused with the orange recovery circle (previous versions
-    // used a red circle which looked almost identical to a recovery dot).
     const bt = toUnix(a.blowup_time);
     if (bt != null && a.blowup) {
       markers.push({
-        time: bt,
-        position: "aboveBar",
-        color: COLORS.red,
-        shape: "arrowDown",
-        text: `×${a.num}`,
+        time: bt, position: "aboveBar", color: COLORS.red,
+        shape: "arrowDown", text: `×${a.num}`,
         _kind: "blowup", _acct: a.num,
       });
     }
-    // Recovery events — orange circle aboveBar with account number. Using
-    // aboveBar (not inBar) keeps them from colliding with candle bodies.
     for (const ev of (a.recovery_events || [])) {
       const tm = toUnix(ev.time);
       if (tm != null) {
@@ -415,19 +399,7 @@ function buildMarkers(accounts) {
         });
       }
     }
-    // Basket close events — gold for TP closes.
-    for (const ev of (a.basket_close_events || [])) {
-      const tm = toUnix(ev.time);
-      if (tm == null) continue;
-      markers.push({
-        time: tm, position: "aboveBar", color: COLORS.gold,
-        shape: "arrowDown", text: `c${a.num}`,
-        _kind: "close", _acct: a.num, _meta: ev.close_type || "",
-      });
-    }
   }
-  // lightweight-charts requires markers sorted by time ascending with unique times per account.
-  // It also requires integer seconds. Dedupe near-identical times by nudging.
   markers.sort((a, b) => a.time - b.time);
   return markers;
 }
@@ -487,15 +459,13 @@ function applyMarkersForVisibleRange(range) {
   //    detailed versions of these.
   // 2. Merge in the trace entry/close/withdrawal markers.
   let finalPriceMarkers = culled;
-  if (state.traceActive && state.traceEntryMarkers) {
+  if (state.traceActive) {
     const tracedAcct = state._tracedAccountNum;
     if (tracedAcct != null) {
-      // Remove close/recovery markers for traced account (trace lines replace them)
-      // but KEEP deploy and blowup markers so account boundaries are always visible.
+      // Keep only deploy + blowup for traced account; remove recovery/close (trace lines replace them).
       culled = culled.filter(m => m._acct !== tracedAcct || m._kind === "deploy" || m._kind === "blowup");
     }
-    const traceVisible = state.traceEntryMarkers.filter(m => m.time >= from && m.time <= to);
-    finalPriceMarkers = [...culled, ...traceVisible];
+    finalPriceMarkers = culled;
     finalPriceMarkers.sort((a, b) => a.time - b.time);
   }
   state.candleSeries.setMarkers(finalPriceMarkers.map(stripInternal));
@@ -694,164 +664,118 @@ function showTraceOverlay(a) {
     baskets.push({ entries: currentBasket, end: currentEnd });
   }
 
-  // Basket-centric trace: each basket gets its own color family.
-  //   SELL basket: red ticks, orange recovery, red solid WAPP, red dashed TP
-  //   BUY basket:  green ticks, light-green recovery, green solid WAPP, green dashed TP
-  //   TP close:    gold tick for both (matched to basket by TP line)
+  // =====================================================================
+  // BASKET-CENTRIC TRACE — clean from scratch
+  //
+  // Colors per basket:
+  //   SELL: red grid ticks, orange recovery tick (with lots), red dotted WAPP, red dashed TP
+  //   BUY:  green grid ticks, light-green recovery tick (with lots), green dotted WAPP, green dashed TP
+  //
+  // Shared:
+  //   Gold tick = TP close (matched to basket by its TP dashed line)
+  //   Gold tick = withdrawal (with $ amount)
+  //   White label = base lot size (centered in account)
+  // =====================================================================
   const traceMarkers = [];
-  const BASKET_COLORS = {
-    sell:     { entry: COLORS.red,   recovery: COLORS.orange,  line: "rgba(248, 81, 73, 0.7)" },
-    buy:      { entry: COLORS.green, recovery: "#7ddb8a",      line: "rgba(63, 185, 80, 0.7)" },
+  const BC = {
+    sell: { entry: COLORS.red,   recovery: COLORS.orange, line: "rgba(248, 81, 73, 0.7)" },
+    buy:  { entry: COLORS.green, recovery: "#7ddb8a",     line: "rgba(63, 185, 80, 0.7)" },
   };
 
   for (const basket of baskets) {
     if (basket.entries.length === 0) continue;
     const firstEntry = basket.entries[0];
     const lastEntry = basket.entries[basket.entries.length - 1];
-    const dir = firstEntry.dir || "sell"; // basket direction from first entry
-    const bc = BASKET_COLORS[dir] || BASKET_COLORS.sell;
-
-    // Find matching basket_close_event.
+    const dir = firstEntry.dir || "sell";
+    const bc = BC[dir] || BC.sell;
     const closeEv = (a.basket_close_events || []).find(ev => {
-      const t = toUnix(ev.time);
-      return t && Math.abs(t - basket.end) < 120;
+      const t = toUnix(ev.time); return t && Math.abs(t - basket.end) < 120;
     });
-
-    // Find the line start: recovery entry time if present, otherwise last entry.
     const recoveryEntry = basket.entries.find(e => e.tag === "recovery");
     const lineStart = recoveryEntry ? recoveryEntry.time_unix : lastEntry.time_unix;
 
-    // WAPP: solid colored line (basket color) from recovery/last entry to close.
-    const wappPrice = closeEv?.basket_wapp || lastEntry.wapp_after;
-    if (wappPrice) {
-      const wappLine = state.priceChart.addLineSeries({
-        color: bc.line,
-        lineWidth: 1,
-        lineStyle: 1, // dotted (WAPP)
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      wappLine.setData([
-        { time: lineStart, value: wappPrice },
-        { time: basket.end, value: wappPrice },
-      ]);
-      state.tracePositionLines.push(wappLine);
-    }
-
-    // TP level: dashed colored line (basket color) from recovery/last entry to close.
-    const tpPrice = closeEv?.tp_price;
-    if (tpPrice && tpPrice > 0) {
-      const tpLine = state.priceChart.addLineSeries({
-        color: bc.line,
-        lineWidth: 1,
-        lineStyle: 2, // dashed
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      tpLine.setData([
-        { time: lineStart, value: tpPrice },
-        { time: basket.end, value: tpPrice },
-      ]);
-      state.tracePositionLines.push(tpLine);
-    }
-
-    // TP close: gold tick with total lots.
-    if (closeEv) {
-      const t = toUnix(closeEv.time);
-      const t15 = Math.floor(t / 900) * 900;
-      const totalLots = basket.entries.reduce((s, e) => s + (e.lots || 0), 0);
-      const cp = closeEv.close_price || closeEv.basket_wapp;
-      if (t && cp) {
-        const closeLine = state.priceChart.addLineSeries({
-          color: COLORS.gold, lineWidth: 2, lineStyle: 0,
-          priceLineVisible: false, lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        closeLine.setData([
-          { time: t15, value: cp },
-          { time: t15 + 900, value: cp },
-        ]);
-        closeLine.setMarkers([{
-          time: t15, position: "aboveBar",
-          color: COLORS.gold, shape: "circle",
-          text: `${totalLots.toFixed(2)}`, size: 0,
-        }]);
-        state.tracePositionLines.push(closeLine);
-      }
-    }
-
-    // Entry ticks: basket color for normal, lighter color for recovery (with lots).
+    // --- Grid + recovery entry ticks ---
     for (const e of basket.entries) {
-      const isRecovery = e.tag === "recovery";
-      const color = isRecovery ? bc.recovery : bc.entry;
+      const isRec = e.tag === "recovery";
       const t15 = Math.floor(e.time_unix / 900) * 900;
       const s = state.priceChart.addLineSeries({
-        color, lineWidth: 2, lineStyle: 0,
-        priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false,
+        color: isRec ? bc.recovery : bc.entry, lineWidth: 2, lineStyle: 0,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
-      s.setData([
-        { time: t15, value: e.price },
-        { time: t15 + 1800, value: e.price },
-      ]);
-      if (isRecovery) {
-        s.setMarkers([{
-          time: t15, position: "aboveBar",
-          color: bc.recovery, shape: "circle",
-          text: `${e.lots}`, size: 0,
-        }]);
+      s.setData([{ time: t15, value: e.price }, { time: t15 + 1800, value: e.price }]);
+      if (isRec) {
+        s.setMarkers([{ time: t15, position: "aboveBar", color: bc.recovery, shape: "circle", text: `${e.lots}`, size: 0 }]);
       }
       state.tracePositionLines.push(s);
     }
-  }
 
-  // Base lot size label: centered in account lifetime, above price action.
-  const baseLots = entries.find(e => e.tag !== "recovery")?.lots;
-  if (baseLots != null) {
-    const deployT = toUnix(a.deploy_time);
-    const endT = blowupT || accountEnd;
-    const midT = Math.floor(((deployT + endT) / 2) / 900) * 900; // center, snapped M15
-    const highPrice = Math.max(...entries.map(e => e.price));
-    const labelSeries = state.priceChart.addLineSeries({
-      lineWidth: 0, priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false, color: "transparent",
-    });
-    labelSeries.setData([{ time: midT, value: highPrice }]);
-    labelSeries.setMarkers([{
-      time: midT, position: "aboveBar",
-      color: "#ffffff", shape: "square",
-      text: `lots: ${baseLots}`, size: 0,
-    }]);
-    state.tracePositionLines.push(labelSeries);
-  }
-
-  // Withdrawal markers: gold tick line (like entries) with wd text.
-  for (const ev of (trace.withdrawal_events || [])) {
-    const t15 = Math.floor(ev.time_unix / 900) * 900;
-    // Find the closest entry price to place the tick at a meaningful level
-    const nearestEntry = entries.reduce((best, e) =>
-      Math.abs(e.time_unix - ev.time_unix) < Math.abs((best?.time_unix || 0) - ev.time_unix) ? e : best, entries[0]);
-    const price = nearestEntry?.price || 0;
-    if (price) {
-      const wdLine = state.priceChart.addLineSeries({
-        color: COLORS.gold, lineWidth: 2, lineStyle: 0,
-        priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false,
+    // --- WAPP line: dotted, basket color ---
+    const wappPrice = closeEv?.basket_wapp || lastEntry.wapp_after;
+    if (wappPrice) {
+      const wl = state.priceChart.addLineSeries({
+        color: bc.line, lineWidth: 1, lineStyle: 1, // dotted
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
-      wdLine.setData([
-        { time: t15, value: price },
-        { time: t15 + 900, value: price },
-      ]);
-      wdLine.setMarkers([{
-        time: t15, position: "aboveBar",
-        color: COLORS.gold, shape: "circle",
-        text: `wd $${Math.round(ev.amount)}`, size: 0,
-      }]);
-      state.tracePositionLines.push(wdLine);
+      wl.setData([{ time: lineStart, value: wappPrice }, { time: basket.end, value: wappPrice }]);
+      state.tracePositionLines.push(wl);
+    }
+
+    // --- TP line: dashed, basket color ---
+    const tpPrice = closeEv?.tp_price;
+    if (tpPrice && tpPrice > 0) {
+      const tl = state.priceChart.addLineSeries({
+        color: bc.line, lineWidth: 1, lineStyle: 2, // dashed
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+      tl.setData([{ time: lineStart, value: tpPrice }, { time: basket.end, value: tpPrice }]);
+      state.tracePositionLines.push(tl);
+    }
+
+    // --- TP close: gold tick ---
+    if (closeEv) {
+      const t15 = Math.floor(toUnix(closeEv.time) / 900) * 900;
+      const lots = basket.entries.reduce((s, e) => s + (e.lots || 0), 0);
+      const cp = closeEv.close_price || closeEv.basket_wapp;
+      if (t15 && cp) {
+        const cl = state.priceChart.addLineSeries({
+          color: COLORS.gold, lineWidth: 2, lineStyle: 0,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+        cl.setData([{ time: t15, value: cp }, { time: t15 + 1800, value: cp }]);
+        cl.setMarkers([{ time: t15, position: "aboveBar", color: COLORS.gold, shape: "circle", text: `${lots.toFixed(2)}`, size: 0 }]);
+        state.tracePositionLines.push(cl);
+      }
     }
   }
+
+  // --- Withdrawal: gold tick with $ amount ---
+  for (const ev of (trace.withdrawal_events || [])) {
+    const t15 = Math.floor(ev.time_unix / 900) * 900;
+    const near = entries.reduce((b, e) => Math.abs(e.time_unix - ev.time_unix) < Math.abs((b?.time_unix||0) - ev.time_unix) ? e : b, entries[0]);
+    if (near?.price) {
+      const wl = state.priceChart.addLineSeries({
+        color: COLORS.gold, lineWidth: 2, lineStyle: 0,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+      wl.setData([{ time: t15, value: near.price }, { time: t15 + 1800, value: near.price }]);
+      wl.setMarkers([{ time: t15, position: "aboveBar", color: COLORS.gold, shape: "circle", text: `wd $${Math.round(ev.amount)}`, size: 0 }]);
+      state.tracePositionLines.push(wl);
+    }
+  }
+
+  // --- Base lot size label: white, centered ---
+  const baseLots = entries.find(e => e.tag !== "recovery")?.lots;
+  if (baseLots != null && entries.length) {
+    const mid = Math.floor(((toUnix(a.deploy_time) + (blowupT || accountEnd)) / 2) / 900) * 900;
+    const hi = Math.max(...entries.map(e => e.price));
+    const ls = state.priceChart.addLineSeries({
+      lineWidth: 0, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, color: "transparent",
+    });
+    ls.setData([{ time: mid, value: hi }]);
+    ls.setMarkers([{ time: mid, position: "aboveBar", color: "#ffffff", shape: "square", text: `lots: ${baseLots}`, size: 0 }]);
+    state.tracePositionLines.push(ls);
+  }
+
   state.traceEntryMarkers = traceMarkers;
   applyMarkersForVisibleRange();
 
