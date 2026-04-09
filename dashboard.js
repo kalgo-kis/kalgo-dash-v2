@@ -761,18 +761,17 @@ function showTraceOverlay(a) {
       }
     }
   }
+  // Withdrawal: just text on the candle series, no tick line.
   for (const ev of (trace.withdrawal_events || [])) {
-    const t15 = Math.floor(ev.time_unix / 900) * 900;
-    const near = entries.reduce((b, e) => Math.abs(e.time_unix - ev.time_unix) < Math.abs((b?.time_unix||0) - ev.time_unix) ? e : b, entries[0]);
-    if (near?.price) {
-      const wl = state.priceChart.addLineSeries({
-        color: COLORS.gold, lineWidth: 3, lineStyle: 0,
-        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-      });
-      wl.setData([{ time: t15, value: near.price }, { time: t15 + 1800, value: near.price }]);
-      wl.setMarkers([{ time: t15, position: "aboveBar", color: COLORS.gold, shape: "circle", text: `wd $${Math.round(ev.amount)}`, size: 0 }]);
-      state.tracePositionLines.push(wl);
-    }
+    traceMarkers.push({
+      time: ev.time_unix,
+      position: "aboveBar",
+      color: COLORS.gold,
+      shape: "square",
+      text: `wd $${Math.round(ev.amount)}`,
+      size: 0,
+      _kind: "trace_wd", _acct: a.num,
+    });
   }
 
   // --- Lot size label: white, centered ---
