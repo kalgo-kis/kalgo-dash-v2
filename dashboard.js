@@ -771,7 +771,7 @@ function showTraceOverlay(a) {
     traceMarkers.push({
       time: ev.time_unix,
       position: "aboveBar",
-      color: COLORS.gold,
+      color: "#0d1117",
       shape: "square",
       text: `wd $${Math.round(ev.amount)}`,
       size: 0,
