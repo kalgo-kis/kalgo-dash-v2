@@ -462,10 +462,15 @@ function applyMarkersForVisibleRange(range) {
   if (state.traceActive) {
     const tracedAcct = state._tracedAccountNum;
     if (tracedAcct != null) {
-      // Keep only deploy + blowup for traced account; remove recovery/close (trace lines replace them).
       culled = culled.filter(m => m._acct !== tracedAcct || m._kind === "deploy" || m._kind === "blowup");
     }
-    finalPriceMarkers = culled;
+    // Merge in trace candle markers (withdrawals etc) from traceEntryMarkers
+    if (state.traceEntryMarkers && state.traceEntryMarkers.length) {
+      const traceVisible = state.traceEntryMarkers.filter(m => m.time >= from && m.time <= to);
+      finalPriceMarkers = [...culled, ...traceVisible];
+    } else {
+      finalPriceMarkers = culled;
+    }
     finalPriceMarkers.sort((a, b) => a.time - b.time);
   }
   state.candleSeries.setMarkers(finalPriceMarkers.map(stripInternal));
