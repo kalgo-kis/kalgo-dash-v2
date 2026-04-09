@@ -241,9 +241,9 @@ function setupCharts() {
   });
 
   state.candleSeries = state.priceChart.addCandlestickSeries({
-    upColor: "#4a5568", downColor: "#2d3748",
-    borderUpColor: "#5a6578", borderDownColor: "#4a5060",
-    wickUpColor: "#5a6578", wickDownColor: "#4a5060",
+    upColor: "#5a6a80", downColor: "#353f50",
+    borderUpColor: "#6a7a90", borderDownColor: "#5a6578",
+    wickUpColor: "#6a7a90", wickDownColor: "#5a6578",
     // EURGBP prices move in fractions of a pip — 5-decimal format is required
     // to read grid levels, spreads, and TP targets. The default 2-decimal
     // "stock" format hides everything below 0.01 which is useless for forex.
@@ -682,19 +682,14 @@ function showTraceOverlay(a) {
     buy:  { entry: COLORS.green, recovery: "#7ddb8a",     line: "rgba(63, 185, 80, 0.7)" },
   };
 
+  // Draw in z-order: entries first (bottom), then WAPP/TP lines, then TP close + withdrawal on top.
+  // This ensures TP close and withdrawal are never covered by subsequent basket entries.
+
+  // --- PASS 1: Grid + recovery entry ticks (bottom layer) ---
   for (const basket of baskets) {
     if (basket.entries.length === 0) continue;
-    const firstEntry = basket.entries[0];
-    const lastEntry = basket.entries[basket.entries.length - 1];
-    const dir = firstEntry.dir || "sell";
+    const dir = basket.entries[0].dir || "sell";
     const bc = BC[dir] || BC.sell;
-    const closeEv = (a.basket_close_events || []).find(ev => {
-      const t = toUnix(ev.time); return t && Math.abs(t - basket.end) < 120;
-    });
-    const recoveryEntry = basket.entries.find(e => e.tag === "recovery");
-    const lineStart = recoveryEntry ? recoveryEntry.time_unix : firstEntry.time_unix;
-
-    // --- Grid + recovery entry ticks ---
     for (const e of basket.entries) {
       const isRec = e.tag === "recovery";
       const t15 = Math.floor(e.time_unix / 900) * 900;
@@ -708,8 +703,21 @@ function showTraceOverlay(a) {
       }
       state.tracePositionLines.push(s);
     }
+  }
 
-    // --- WAPP line: dotted, basket color ---
+  // --- PASS 2: WAPP + TP lines (middle layer) ---
+  for (const basket of baskets) {
+    if (basket.entries.length === 0) continue;
+    const firstEntry = basket.entries[0];
+    const lastEntry = basket.entries[basket.entries.length - 1];
+    const dir = firstEntry.dir || "sell";
+    const bc = BC[dir] || BC.sell;
+    const closeEv = (a.basket_close_events || []).find(ev => {
+      const t = toUnix(ev.time); return t && Math.abs(t - basket.end) < 120;
+    });
+    const recoveryEntry = basket.entries.find(e => e.tag === "recovery");
+    const lineStart = recoveryEntry ? recoveryEntry.time_unix : Math.max(firstEntry.time_unix, lastEntry.time_unix - 900 * 10);
+
     const wappPrice = closeEv?.basket_wapp || lastEntry.wapp_after;
     if (wappPrice) {
       const wl = state.priceChart.addLineSeries({
@@ -719,8 +727,6 @@ function showTraceOverlay(a) {
       wl.setData([{ time: lineStart, value: wappPrice }, { time: basket.end, value: wappPrice }]);
       state.tracePositionLines.push(wl);
     }
-
-    // --- TP line: dashed, basket color ---
     const tpPrice = closeEv?.tp_price;
     if (tpPrice && tpPrice > 0) {
       const tl = state.priceChart.addLineSeries({
@@ -730,15 +736,21 @@ function showTraceOverlay(a) {
       tl.setData([{ time: lineStart, value: tpPrice }, { time: basket.end, value: tpPrice }]);
       state.tracePositionLines.push(tl);
     }
+  }
 
-    // --- TP close: cyan tick ---
+  // --- PASS 3: TP close + withdrawal (top layer — always visible) ---
+  for (const basket of baskets) {
+    if (basket.entries.length === 0) continue;
+    const closeEv = (a.basket_close_events || []).find(ev => {
+      const t = toUnix(ev.time); return t && Math.abs(t - basket.end) < 120;
+    });
     if (closeEv) {
       const t15 = Math.floor(toUnix(closeEv.time) / 900) * 900;
       const lots = basket.entries.reduce((s, e) => s + (e.lots || 0), 0);
       const cp = closeEv.close_price || closeEv.basket_wapp;
       if (t15 && cp) {
         const cl = state.priceChart.addLineSeries({
-          color: COLORS.cyan, lineWidth: 2, lineStyle: 0,
+          color: COLORS.cyan, lineWidth: 3, lineStyle: 0,
           priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
         });
         cl.setData([{ time: t15, value: cp }, { time: t15 + 1800, value: cp }]);
@@ -747,14 +759,12 @@ function showTraceOverlay(a) {
       }
     }
   }
-
-  // --- Withdrawal: gold tick with $ amount ---
   for (const ev of (trace.withdrawal_events || [])) {
     const t15 = Math.floor(ev.time_unix / 900) * 900;
     const near = entries.reduce((b, e) => Math.abs(e.time_unix - ev.time_unix) < Math.abs((b?.time_unix||0) - ev.time_unix) ? e : b, entries[0]);
     if (near?.price) {
       const wl = state.priceChart.addLineSeries({
-        color: COLORS.gold, lineWidth: 2, lineStyle: 0,
+        color: COLORS.gold, lineWidth: 3, lineStyle: 0,
         priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
       });
       wl.setData([{ time: t15, value: near.price }, { time: t15 + 1800, value: near.price }]);
@@ -763,7 +773,7 @@ function showTraceOverlay(a) {
     }
   }
 
-  // --- Base lot size label: white, centered ---
+  // --- Lot size label: white, centered ---
   const baseLots = entries.find(e => e.tag !== "recovery")?.lots;
   if (baseLots != null && entries.length) {
     const mid = Math.floor(((toUnix(a.deploy_time) + (blowupT || accountEnd)) / 2) / 900) * 900;
