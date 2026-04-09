@@ -17,6 +17,7 @@
   --purple: #bc8cff;
   --orange: #db6d28;
   --gold: #e3b341;
+  --cyan: #56d4dd;
   --gray: #6e7681;
 }
 
@@ -192,7 +193,8 @@ header .subtitle {
 .dot.orange { background: var(--orange); }
 .dot.blue { background: var(--blue); }
 .dot.purple { background: var(--purple); }
-.dot.gold { background: #d29922; }
+.dot.gold { background: var(--gold); }
+.dot.cyan { background: var(--cyan); }
 
 .leg-arrow, .leg-sq, .leg-dash {
   font-size: 10px;
@@ -205,16 +207,17 @@ header .subtitle {
 .leg-arrow.blue { color: var(--blue); }
 .leg-arrow.teal { color: var(--teal); }
 .leg-arrow.orange { color: var(--orange); }
-.leg-sq.gold { color: #d29922; }
+.leg-arrow.cyan { color: var(--cyan); }
+.leg-sq.gold { color: var(--gold); }
 .leg-dash {
   font-size: 9px;
   letter-spacing: -1px;
   font-weight: bold;
 }
-.leg-dash.gold { color: rgba(210, 153, 34, 0.7); }
+.leg-dash.gold { color: rgba(227, 179, 65, 0.7); }
 .leg-dash.green { color: rgba(63, 185, 80, 0.7); }
 .leg-dash.purple { color: rgba(188, 140, 255, 0.7); }
-.leg-arrow.gold { color: #d29922; }
+.leg-arrow.gold { color: var(--gold); }
 
 .chart {
   height: 480px;

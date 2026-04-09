@@ -6,7 +6,7 @@
 const COLORS = {
   green: "#3fb950", red: "#f85149", gray: "#6e7681",
   orange: "#db6d28", blue: "#58a6ff", purple: "#bc8cff",
-  teal: "#39c5cf", gold: "#d29922",
+  teal: "#39c5cf", gold: "#e3b341", cyan: "#56d4dd",
   text: "#e6edf3", textMuted: "#8b949e", border: "#30363d",
   surface: "#161b22", bg: "#0d1117",
 };
@@ -241,9 +241,9 @@ function setupCharts() {
   });
 
   state.candleSeries = state.priceChart.addCandlestickSeries({
-    upColor: "#2962ff", downColor: "#e0e0e0",
-    borderUpColor: "#2962ff", borderDownColor: "#e0e0e0",
-    wickUpColor: "#2962ff", wickDownColor: "#e0e0e0",
+    upColor: "#3a4050", downColor: "#2a2e38",
+    borderUpColor: "#4a5060", borderDownColor: "#3a3e48",
+    wickUpColor: "#4a5060", wickDownColor: "#3a3e48",
     // EURGBP prices move in fractions of a pip — 5-decimal format is required
     // to read grid levels, spreads, and TP targets. The default 2-decimal
     // "stock" format hides everything below 0.01 which is useless for forex.
@@ -672,7 +672,7 @@ function showTraceOverlay(a) {
   //   BUY:  green grid ticks, light-green recovery tick (with lots), green dotted WAPP, green dashed TP
   //
   // Shared:
-  //   Gold tick = TP close (matched to basket by its TP dashed line)
+  //   Cyan tick = TP close (matched to basket by its TP dashed line)
   //   Gold tick = withdrawal (with $ amount)
   //   White label = base lot size (centered in account)
   // =====================================================================
@@ -731,18 +731,18 @@ function showTraceOverlay(a) {
       state.tracePositionLines.push(tl);
     }
 
-    // --- TP close: gold tick ---
+    // --- TP close: cyan tick ---
     if (closeEv) {
       const t15 = Math.floor(toUnix(closeEv.time) / 900) * 900;
       const lots = basket.entries.reduce((s, e) => s + (e.lots || 0), 0);
       const cp = closeEv.close_price || closeEv.basket_wapp;
       if (t15 && cp) {
         const cl = state.priceChart.addLineSeries({
-          color: COLORS.gold, lineWidth: 2, lineStyle: 0,
+          color: COLORS.cyan, lineWidth: 2, lineStyle: 0,
           priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
         });
         cl.setData([{ time: t15, value: cp }, { time: t15 + 1800, value: cp }]);
-        cl.setMarkers([{ time: t15, position: "aboveBar", color: COLORS.gold, shape: "circle", text: `${lots.toFixed(2)}`, size: 0 }]);
+        cl.setMarkers([{ time: t15, position: "aboveBar", color: COLORS.cyan, shape: "circle", text: `${lots.toFixed(2)}`, size: 0 }]);
         state.tracePositionLines.push(cl);
       }
     }
