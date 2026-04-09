@@ -650,6 +650,43 @@ function showTraceOverlay(a) {
   state.traceActive = true;
   state._tracedAccountNum = a.num;
 
+  // Deploy and blowup vertical markers so you can see account boundaries.
+  const deployT = Math.floor(toUnix(a.deploy_time) / 900) * 900;
+  const blowT = a.blowup ? Math.floor(toUnix(a.blowup_time) / 900) * 900 : null;
+
+  const deployLine = state.priceChart.addLineSeries({
+    color: "rgba(88, 166, 255, 0.5)", lineWidth: 1, lineStyle: 2,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  });
+  // Vertical line: two points at same time, far apart in price
+  deployLine.setData([
+    { time: deployT, value: 0.5 },
+    { time: deployT + 900, value: 1.0 },
+  ]);
+  deployLine.setMarkers([{
+    time: deployT, position: "aboveBar",
+    color: "rgba(88, 166, 255, 0.8)", shape: "square",
+    text: `DEPLOY #${a.num}`, size: 0,
+  }]);
+  state.tracePositionLines.push(deployLine);
+
+  if (blowT) {
+    const blowLine = state.priceChart.addLineSeries({
+      color: "rgba(248, 81, 73, 0.5)", lineWidth: 1, lineStyle: 2,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    blowLine.setData([
+      { time: blowT, value: 0.5 },
+      { time: blowT + 900, value: 1.0 },
+    ]);
+    blowLine.setMarkers([{
+      time: blowT, position: "aboveBar",
+      color: "rgba(248, 81, 73, 0.8)", shape: "square",
+      text: `BLOWUP #${a.num}`, size: 0,
+    }]);
+    state.tracePositionLines.push(blowLine);
+  }
+
   const entries = trace.grid_entry_events || [];
   const closeTimes = [];
   // Collect close event times from existing basket_close_events.
