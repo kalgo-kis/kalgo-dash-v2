@@ -203,6 +203,7 @@ header .subtitle {
 .leg-arrow.red { color: var(--red); }
 .leg-arrow.gray { color: var(--gray); }
 .leg-arrow.blue { color: var(--blue); }
+.leg-arrow.teal { color: var(--teal); }
 .leg-arrow.orange { color: var(--orange); }
 .leg-sq.gold { color: #d29922; }
 .leg-dash {

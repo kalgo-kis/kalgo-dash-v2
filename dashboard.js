@@ -650,44 +650,42 @@ function showTraceOverlay(a) {
   state.traceActive = true;
   state._tracedAccountNum = a.num;
 
-  // Deploy and blowup vertical markers so you can see account boundaries.
+  const entries = trace.grid_entry_events || [];
+
+  // Deploy and blowup labels — placed at actual price range so they're visible.
+  const allPrices = entries.map(e => e.price).filter(Boolean);
+  const priceHigh = allPrices.length ? Math.max(...allPrices) : 0;
+  const priceLow = allPrices.length ? Math.min(...allPrices) : 0;
   const deployT = Math.floor(toUnix(a.deploy_time) / 900) * 900;
   const blowT = a.blowup ? Math.floor(toUnix(a.blowup_time) / 900) * 900 : null;
 
-  const deployLine = state.priceChart.addLineSeries({
-    color: "rgba(88, 166, 255, 0.5)", lineWidth: 1, lineStyle: 2,
-    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-  });
-  // Vertical line: two points at same time, far apart in price
-  deployLine.setData([
-    { time: deployT, value: 0.5 },
-    { time: deployT + 900, value: 1.0 },
-  ]);
-  deployLine.setMarkers([{
-    time: deployT, position: "aboveBar",
-    color: "rgba(88, 166, 255, 0.8)", shape: "square",
-    text: `DEPLOY #${a.num}`, size: 0,
-  }]);
-  state.tracePositionLines.push(deployLine);
-
-  if (blowT) {
-    const blowLine = state.priceChart.addLineSeries({
-      color: "rgba(248, 81, 73, 0.5)", lineWidth: 1, lineStyle: 2,
-      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  if (priceHigh) {
+    const deploySeries = state.priceChart.addLineSeries({
+      lineWidth: 0, priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false, color: "transparent",
     });
-    blowLine.setData([
-      { time: blowT, value: 0.5 },
-      { time: blowT + 900, value: 1.0 },
-    ]);
-    blowLine.setMarkers([{
-      time: blowT, position: "aboveBar",
-      color: "rgba(248, 81, 73, 0.8)", shape: "square",
-      text: `BLOWUP #${a.num}`, size: 0,
+    deploySeries.setData([{ time: deployT, value: priceHigh }]);
+    deploySeries.setMarkers([{
+      time: deployT, position: "aboveBar",
+      color: "#ffffff", shape: "square",
+      text: `DEPLOY #${a.num}`, size: 0,
     }]);
-    state.tracePositionLines.push(blowLine);
-  }
+    state.tracePositionLines.push(deploySeries);
 
-  const entries = trace.grid_entry_events || [];
+    if (blowT) {
+      const blowSeries = state.priceChart.addLineSeries({
+        lineWidth: 0, priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false, color: "transparent",
+      });
+      blowSeries.setData([{ time: blowT, value: priceLow }]);
+      blowSeries.setMarkers([{
+        time: blowT, position: "belowBar",
+        color: COLORS.red, shape: "square",
+        text: `BLOWUP #${a.num}`, size: 0,
+      }]);
+      state.tracePositionLines.push(blowSeries);
+    }
+  }
   const closeTimes = [];
   // Collect close event times from existing basket_close_events.
   for (const ev of (a.basket_close_events || [])) {
@@ -815,7 +813,7 @@ function showTraceOverlay(a) {
   for (const e of entries) {
     const isBuy = e.dir === "buy";
     const isRecovery = e.tag === "recovery";
-    const color = isRecovery ? COLORS.orange : (isBuy ? COLORS.blue : COLORS.red);
+    const color = isRecovery ? COLORS.orange : (isBuy ? COLORS.teal : COLORS.red);
     const t15 = Math.floor(e.time_unix / 900) * 900;
     const s = state.priceChart.addLineSeries({
       color,
