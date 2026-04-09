@@ -727,7 +727,7 @@ function showTraceOverlay(a) {
       const wappLine = state.priceChart.addLineSeries({
         color: bc.line,
         lineWidth: 1,
-        lineStyle: 0, // solid
+        lineStyle: 1, // dotted (WAPP)
         priceLineVisible: false,
         lastValueVisible: false,
         crosshairMarkerVisible: false,
@@ -794,7 +794,7 @@ function showTraceOverlay(a) {
       });
       s.setData([
         { time: t15, value: e.price },
-        { time: t15 + 900, value: e.price },
+        { time: t15 + 1800, value: e.price },
       ]);
       if (isRecovery) {
         s.setMarkers([{
