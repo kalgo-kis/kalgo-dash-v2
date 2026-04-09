@@ -415,12 +415,12 @@ function buildMarkers(accounts) {
         });
       }
     }
-    // Basket close events — green for TP closes, keep it simple.
+    // Basket close events — gold for TP closes.
     for (const ev of (a.basket_close_events || [])) {
       const tm = toUnix(ev.time);
       if (tm == null) continue;
       markers.push({
-        time: tm, position: "aboveBar", color: COLORS.green,
+        time: tm, position: "aboveBar", color: COLORS.gold,
         shape: "arrowDown", text: `c${a.num}`,
         _kind: "close", _acct: a.num, _meta: ev.close_type || "",
       });
@@ -490,7 +490,9 @@ function applyMarkersForVisibleRange(range) {
   if (state.traceActive && state.traceEntryMarkers) {
     const tracedAcct = state._tracedAccountNum;
     if (tracedAcct != null) {
-      culled = culled.filter(m => m._acct !== tracedAcct);
+      // Remove close/recovery markers for traced account (trace lines replace them)
+      // but KEEP deploy and blowup markers so account boundaries are always visible.
+      culled = culled.filter(m => m._acct !== tracedAcct || m._kind === "deploy" || m._kind === "blowup");
     }
     const traceVisible = state.traceEntryMarkers.filter(m => m.time >= from && m.time <= to);
     finalPriceMarkers = [...culled, ...traceVisible];
@@ -651,41 +653,6 @@ function showTraceOverlay(a) {
   state._tracedAccountNum = a.num;
 
   const entries = trace.grid_entry_events || [];
-
-  // Deploy and blowup labels — placed at actual price range so they're visible.
-  const allPrices = entries.map(e => e.price).filter(Boolean);
-  const priceHigh = allPrices.length ? Math.max(...allPrices) : 0;
-  const priceLow = allPrices.length ? Math.min(...allPrices) : 0;
-  const deployT = Math.floor(toUnix(a.deploy_time) / 900) * 900;
-  const blowT = a.blowup ? Math.floor(toUnix(a.blowup_time) / 900) * 900 : null;
-
-  if (priceHigh) {
-    const deploySeries = state.priceChart.addLineSeries({
-      lineWidth: 0, priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false, color: "transparent",
-    });
-    deploySeries.setData([{ time: deployT, value: priceHigh }]);
-    deploySeries.setMarkers([{
-      time: deployT, position: "aboveBar",
-      color: "#ffffff", shape: "square",
-      text: `DEPLOY #${a.num}`, size: 0,
-    }]);
-    state.tracePositionLines.push(deploySeries);
-
-    if (blowT) {
-      const blowSeries = state.priceChart.addLineSeries({
-        lineWidth: 0, priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false, color: "transparent",
-      });
-      blowSeries.setData([{ time: blowT, value: priceLow }]);
-      blowSeries.setMarkers([{
-        time: blowT, position: "belowBar",
-        color: COLORS.red, shape: "square",
-        text: `BLOWUP #${a.num}`, size: 0,
-      }]);
-      state.tracePositionLines.push(blowSeries);
-    }
-  }
   const closeTimes = [];
   // Collect close event times from existing basket_close_events.
   for (const ev of (a.basket_close_events || [])) {
@@ -749,7 +716,7 @@ function showTraceOverlay(a) {
     const wappPrice = closeEv?.basket_wapp || lastEntry.wapp_after;
     if (wappPrice) {
       const wappLine = state.priceChart.addLineSeries({
-        color: "rgba(210, 153, 34, 0.7)", // yellow/gold WAPP
+        color: "rgba(188, 140, 255, 0.7)", // purple WAPP
         lineWidth: 1,
         lineStyle: 2, // dashed
         priceLineVisible: false,
@@ -767,7 +734,7 @@ function showTraceOverlay(a) {
     const tpPrice = closeEv?.tp_price;
     if (tpPrice && tpPrice > 0) {
       const tpLine = state.priceChart.addLineSeries({
-        color: "rgba(63, 185, 80, 0.7)", // green TP level
+        color: "rgba(210, 153, 34, 0.7)", // gold TP level
         lineWidth: 1,
         lineStyle: 2, // dashed
         priceLineVisible: false,
@@ -789,7 +756,7 @@ function showTraceOverlay(a) {
       const cp = closeEv.close_price || closeEv.basket_wapp;
       if (t && cp) {
         const closeLine = state.priceChart.addLineSeries({
-          color: COLORS.green, lineWidth: 2, lineStyle: 0,
+          color: COLORS.gold, lineWidth: 2, lineStyle: 0,
           priceLineVisible: false, lastValueVisible: false,
           crosshairMarkerVisible: false,
         });
@@ -799,7 +766,7 @@ function showTraceOverlay(a) {
         ]);
         closeLine.setMarkers([{
           time: t15, position: "aboveBar",
-          color: COLORS.green, shape: "circle",
+          color: COLORS.gold, shape: "circle",
           text: `${totalLots.toFixed(2)}`, size: 0,
         }]);
         state.tracePositionLines.push(closeLine);
@@ -813,7 +780,7 @@ function showTraceOverlay(a) {
   for (const e of entries) {
     const isBuy = e.dir === "buy";
     const isRecovery = e.tag === "recovery";
-    const color = isRecovery ? COLORS.orange : (isBuy ? COLORS.teal : COLORS.red);
+    const color = isRecovery ? COLORS.orange : (isBuy ? COLORS.green : COLORS.red);
     const t15 = Math.floor(e.time_unix / 900) * 900;
     const s = state.priceChart.addLineSeries({
       color,
