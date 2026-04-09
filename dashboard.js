@@ -694,13 +694,22 @@ function showTraceOverlay(a) {
     baskets.push({ entries: currentBasket, end: currentEnd });
   }
 
-  // TradingView-style trace: entry arrows, WAPP line, TP line, close arrow.
+  // Basket-centric trace: each basket gets its own color family.
+  //   SELL basket: red ticks, orange recovery, red solid WAPP, red dashed TP
+  //   BUY basket:  green ticks, light-green recovery, green solid WAPP, green dashed TP
+  //   TP close:    gold tick for both (matched to basket by TP line)
   const traceMarkers = [];
+  const BASKET_COLORS = {
+    sell:     { entry: COLORS.red,   recovery: COLORS.orange,  line: "rgba(248, 81, 73, 0.7)" },
+    buy:      { entry: COLORS.green, recovery: "#7ddb8a",      line: "rgba(63, 185, 80, 0.7)" },
+  };
 
   for (const basket of baskets) {
     if (basket.entries.length === 0) continue;
     const firstEntry = basket.entries[0];
     const lastEntry = basket.entries[basket.entries.length - 1];
+    const dir = firstEntry.dir || "sell"; // basket direction from first entry
+    const bc = BASKET_COLORS[dir] || BASKET_COLORS.sell;
 
     // Find matching basket_close_event.
     const closeEv = (a.basket_close_events || []).find(ev => {
@@ -712,13 +721,13 @@ function showTraceOverlay(a) {
     const recoveryEntry = basket.entries.find(e => e.tag === "recovery");
     const lineStart = recoveryEntry ? recoveryEntry.time_unix : lastEntry.time_unix;
 
-    // WAPP: dashed yellow line from recovery (or last entry) to close.
+    // WAPP: solid colored line (basket color) from recovery/last entry to close.
     const wappPrice = closeEv?.basket_wapp || lastEntry.wapp_after;
     if (wappPrice) {
       const wappLine = state.priceChart.addLineSeries({
-        color: "rgba(188, 140, 255, 0.7)", // purple WAPP
+        color: bc.line,
         lineWidth: 1,
-        lineStyle: 2, // dashed
+        lineStyle: 0, // solid
         priceLineVisible: false,
         lastValueVisible: false,
         crosshairMarkerVisible: false,
@@ -730,11 +739,11 @@ function showTraceOverlay(a) {
       state.tracePositionLines.push(wappLine);
     }
 
-    // TP level: dashed green line from recovery (or last entry) to close.
+    // TP level: dashed colored line (basket color) from recovery/last entry to close.
     const tpPrice = closeEv?.tp_price;
     if (tpPrice && tpPrice > 0) {
       const tpLine = state.priceChart.addLineSeries({
-        color: "rgba(210, 153, 34, 0.7)", // gold TP level
+        color: bc.line,
         lineWidth: 1,
         lineStyle: 2, // dashed
         priceLineVisible: false,
@@ -748,7 +757,7 @@ function showTraceOverlay(a) {
       state.tracePositionLines.push(tpLine);
     }
 
-    // Basket close: green tick line at close price with total closed lots text.
+    // TP close: gold tick with total lots.
     if (closeEv) {
       const t = toUnix(closeEv.time);
       const t15 = Math.floor(t / 900) * 900;
@@ -772,38 +781,30 @@ function showTraceOverlay(a) {
         state.tracePositionLines.push(closeLine);
       }
     }
-  }
 
-  // Entry tick marks at exact fill price: tiny horizontal lines (2 candles wide)
-  // colored by direction. No text on individual entries to keep chart clean.
-  // Recovery entries get lot text since their size varies and matters.
-  for (const e of entries) {
-    const isBuy = e.dir === "buy";
-    const isRecovery = e.tag === "recovery";
-    const color = isRecovery ? COLORS.orange : (isBuy ? COLORS.green : COLORS.red);
-    const t15 = Math.floor(e.time_unix / 900) * 900;
-    const s = state.priceChart.addLineSeries({
-      color,
-      lineWidth: 2,
-      lineStyle: 0,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    // Tiny tick: 2 candles wide
-    s.setData([
-      { time: t15, value: e.price },
-      { time: t15 + 900, value: e.price },
-    ]);
-    // Recovery entries show lot size as marker text
-    if (isRecovery) {
-      s.setMarkers([{
-        time: t15, position: "aboveBar",
-        color: COLORS.orange, shape: "circle",
-        text: `${e.lots}`, size: 0,
-      }]);
+    // Entry ticks: basket color for normal, lighter color for recovery (with lots).
+    for (const e of basket.entries) {
+      const isRecovery = e.tag === "recovery";
+      const color = isRecovery ? bc.recovery : bc.entry;
+      const t15 = Math.floor(e.time_unix / 900) * 900;
+      const s = state.priceChart.addLineSeries({
+        color, lineWidth: 2, lineStyle: 0,
+        priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData([
+        { time: t15, value: e.price },
+        { time: t15 + 900, value: e.price },
+      ]);
+      if (isRecovery) {
+        s.setMarkers([{
+          time: t15, position: "aboveBar",
+          color: bc.recovery, shape: "circle",
+          text: `${e.lots}`, size: 0,
+        }]);
+      }
+      state.tracePositionLines.push(s);
     }
-    state.tracePositionLines.push(s);
   }
 
   // Base lot size label: centered in account lifetime, above price action.
