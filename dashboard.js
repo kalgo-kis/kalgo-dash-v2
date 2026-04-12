@@ -613,10 +613,14 @@ function clearTraceOverlay() {
     try { state.priceChart.removeSeries(s); } catch (e) {}
   }
   state.tracePositionLines = [];
-  if (state._traceTickHandler && state.priceChart) {
-    state.priceChart.timeScale().unsubscribeVisibleTimeRangeChange(state._traceTickHandler);
-    state._traceTickHandler = null;
+  // Clean up canvas overlay
+  if (state._traceAnimFrame) {
+    cancelAnimationFrame(state._traceAnimFrame);
+    state._traceAnimFrame = null;
   }
+  const cvs = document.getElementById("trade-overlay-canvas");
+  if (cvs) cvs.remove();
+  state._traceCanvas = null;
   state.traceActive = false;
   state.traceEntryMarkers = null;
   state._tracedAccountNum = null;
@@ -651,57 +655,58 @@ function showTraceOverlay(a) {
   }
   allTicks.sort((a, b) => a.t - b.t);
 
-  // Series pool: create 200 line series ONCE. On scroll, reassign their
-  // data to show visible ticks. setData() is cheap; addLineSeries/removeSeries
-  // is expensive. Pool stays alive until clearTraceOverlay().
-  const POOL_SIZE = 200;
-  const pool = [];
-  // Pre-create all series (one-time cost)
-  for (let i = 0; i < POOL_SIZE; i++) {
-    const s = state.priceChart.addLineSeries({
-      color: COLORS.green, lineWidth: 2, lineStyle: 0,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    s.setData([]);
-    pool.push(s);
-  }
-  state.tracePositionLines = pool;
+  // Canvas overlay drawn via requestAnimationFrame.
+  // Renders all ticks as 8x2px rectangles at exact prices using
+  // LightweightCharts coordinate API. Canvas redraws every frame
+  // so it tracks zoom/scroll perfectly with zero lag.
+  const chartEl = document.getElementById("price-chart");
+  // LightweightCharts creates a nested structure — the actual chart
+  // container is the first child div with position:relative
+  const chartContainer = chartEl.querySelector("table") || chartEl;
 
-  function assignVisibleTicks() {
-    const range = state.priceChart.timeScale().getVisibleRange();
-    if (!range) return;
-    const visible = allTicks.filter(tk => tk.t >= range.from && tk.t <= range.to);
+  let canvas = document.getElementById("trade-overlay-canvas");
+  if (canvas) canvas.remove();
+  canvas = document.createElement("canvas");
+  canvas.id = "trade-overlay-canvas";
+  canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;";
+  chartContainer.style.position = "relative";
+  chartContainer.appendChild(canvas);
 
-    // If more visible ticks than pool slots, evenly sample
-    let toShow = visible;
-    if (visible.length > POOL_SIZE) {
-      const step = visible.length / POOL_SIZE;
-      toShow = [];
-      for (let i = 0; i < POOL_SIZE; i++) toShow.push(visible[Math.floor(i * step)]);
+  state._traceCanvas = canvas;
+  state._traceAnimFrame = null;
+
+  function drawFrame() {
+    if (!state._traceCanvas) return;
+    const cvs = state._traceCanvas;
+    const parent = cvs.parentElement;
+    if (!parent) return;
+
+    const w = parent.clientWidth;
+    const h = parent.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    cvs.width = w * dpr;
+    cvs.height = h * dpr;
+
+    const ctx = cvs.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const ts = state.priceChart.timeScale();
+    const series = state.candleSeries;
+
+    for (const tk of allTicks) {
+      const x = ts.timeToCoordinate(tk.t);
+      if (x === null || x < 0 || x > w) continue;
+      const y = series.priceToCoordinate(tk.v);
+      if (y === null || y < 0 || y > h) continue;
+      ctx.fillStyle = tk.color;
+      ctx.fillRect(x - 4, y - 1, 8, 2);
     }
 
-    // Assign ticks to pool series; clear unused ones
-    for (let i = 0; i < POOL_SIZE; i++) {
-      if (i < toShow.length) {
-        const tk = toShow[i];
-        pool[i].applyOptions({ color: tk.color });
-        pool[i].setData([{ time: tk.t, value: tk.v }, { time: tk.t + 900, value: tk.v }]);
-      } else {
-        pool[i].setData([]);
-      }
-    }
+    state._traceAnimFrame = requestAnimationFrame(drawFrame);
   }
 
-  assignVisibleTicks();
-
-  // Re-assign on zoom/scroll (debounced — setData is cheap, no series churn)
-  let _debounce = null;
-  state._traceTickHandler = () => {
-    clearTimeout(_debounce);
-    _debounce = setTimeout(assignVisibleTicks, 100);
-  };
-  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(state._traceTickHandler);
+  drawFrame();
 
   // Withdrawal + blowup as text markers
   const markers = [];
