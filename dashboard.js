@@ -683,6 +683,7 @@ function showTraceOverlay(a) {
       lastValueVisible: false,
       crosshairMarkerVisible: false,
       crosshairMarkerRadius: 3,
+      autoscaleInfoProvider: () => null,  // don't affect price scale
     });
     s.setData(deduped);
     state.tracePositionLines.push(s);
@@ -690,7 +691,8 @@ function showTraceOverlay(a) {
 
   const buyItems = [];
   const sellItems = [];
-  const tpItems = [];
+  const tpBuyItems = [];
+  const tpSellItems = [];
 
   for (const e of entries) {
     const isBuy = (e.dir || "").toLowerCase() === "buy";
@@ -700,12 +702,16 @@ function showTraceOverlay(a) {
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
     const cp = ev.close_price || 0;
-    if (t && cp) tpItems.push({ t, v: cp });
+    if (!t || !cp) continue;
+    const side = (ev.closed_basket || "").toLowerCase();
+    (side === "buy" ? tpBuyItems : tpSellItems).push({ t, v: cp });
   }
 
   buildTickSeries(buyItems, COLORS.green);
   buildTickSeries(sellItems, COLORS.red);
-  buildTickSeries(tpItems, COLORS.cyan);
+  // TP closes: lighter shade of the basket's color
+  buildTickSeries(tpBuyItems, "#7ddb8a");   // light green
+  buildTickSeries(tpSellItems, "#ff9a8c");  // light red/salmon
 
   // Withdrawal + blowup as text markers on candle series
   const markers = [];
