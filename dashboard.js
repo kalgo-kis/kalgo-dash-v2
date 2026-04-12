@@ -199,7 +199,10 @@ function renderBundle(b) {
 function clearCharts() {
   const pc = document.getElementById("price-chart");
   const bc = document.getElementById("bank-chart");
+  if (state._plotlyReady) { try { Plotly.purge(pc); } catch (e) {} }
   pc.innerHTML = ""; bc.innerHTML = "";
+  state._plotlyReady = false;
+  state._plotlyBaseTraceCount = null;
   state.priceChart = null; state.bankChart = null;
   state.candleSeries = null; state.bankSeries = null;
   state.markerIndex = {};
@@ -231,24 +234,19 @@ function commonChartOpts(height) {
 function setupCharts() {
   const pcEl = document.getElementById("price-chart");
   const bcEl = document.getElementById("bank-chart");
-  state.priceChart = LightweightCharts.createChart(pcEl, {
-    ...commonChartOpts(pcEl.clientHeight || 480),
-    width: pcEl.clientWidth,
-  });
+
+  // Price chart uses Plotly (handles scatter overlays natively)
+  state._plotlyDiv = pcEl;
+  state._plotlyReady = false;
+
+  // Bank chart stays on LightweightCharts
   state.bankChart = LightweightCharts.createChart(bcEl, {
     ...commonChartOpts(bcEl.clientHeight || 360),
     width: bcEl.clientWidth,
   });
 
-  state.candleSeries = state.priceChart.addCandlestickSeries({
-    upColor: "#5a6a80", downColor: "#353f50",
-    borderUpColor: "#6a7a90", borderDownColor: "#5a6578",
-    wickUpColor: "#6a7a90", wickDownColor: "#5a6578",
-    // EURGBP prices move in fractions of a pip — 5-decimal format is required
-    // to read grid levels, spreads, and TP targets. The default 2-decimal
-    // "stock" format hides everything below 0.01 which is useless for forex.
-    priceFormat: { type: "price", precision: 5, minMove: 0.00001 },
-  });
+  // Dummy candleSeries reference for compatibility with marker system
+  state.candleSeries = { setMarkers: () => {}, data: () => [] };
   // Bank chart — toggleable overlays. All step lines (lineType: 1) because
   // every value only changes at discrete events.
   //
@@ -302,67 +300,13 @@ function setupCharts() {
     scaleMargins: { top: 0.05, bottom: 0.05 },
   });
 
-  // resize handling
+  // resize handling (bank chart only — Plotly auto-resizes)
   const ro = new ResizeObserver(() => {
-    if (state.priceChart) state.priceChart.resize(pcEl.clientWidth, pcEl.clientHeight);
     if (state.bankChart) state.bankChart.resize(bcEl.clientWidth, bcEl.clientHeight);
+    if (state._plotlyReady) Plotly.Plots.resize(pcEl);
   });
   ro.observe(pcEl);
   ro.observe(bcEl);
-
-  // Sync bank chart to the price chart by WALL-CLOCK time (not logical index).
-  // Logical sync fails because the charts have very different point counts
-  // (~71k M15 candles vs ~160 bank points).
-  //
-  // One-way: price -> bank. Bidirectional sync caused a feedback loop because
-  // the bank chart clamps to its own data bounds and emits back, snapping the
-  // price chart. The capital reference line is extended in populateBankChart
-  // to span the full eval period so bank's "follow" rarely needs to clamp.
-  //
-  // Guarded: populatePriceChart's fitContent() fires this handler BEFORE
-  // populateBankChart has set any data. Trying to setVisibleRange on an empty
-  // bank chart throws and aborts the rest of the render, leaving both charts
-  // in a corrupt state. Skip the sync until the bank chart actually has data.
-  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(r => {
-    if (!r) return;
-    // Level-of-detail marker culling: re-filter the stored full marker sets
-    // to only those in the visible range, then cull by priority tier so the
-    // chart isn't swamped with hundreds of labels at wide zoom.
-    applyMarkersForVisibleRange(r);
-    // Bank chart follow.
-    if (!state.bankChart || !state.bankSeries) return;
-    const data = state.bankSeries.data();
-    if (!data || data.length === 0) return;
-    try {
-      state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to });
-    } catch (e) {
-      /* out-of-range sync; ignore */
-    }
-  });
-
-  // click handler for markers
-  state.priceChart.subscribeCrosshairMove(param => {
-    if (!param || !param.time) return;
-    // hover tooltip could go here; for now click handles selection
-  });
-  state.priceChart.subscribeClick(param => {
-    if (!param || !param.time) return;
-    // find closest deploy marker to clicked time
-    const t = param.time;
-    const b = state.currentBundle;
-    if (!b) return;
-    let best = null, bestDist = Infinity;
-    for (const a of b.accounts) {
-      const at = toUnix(a.deploy_time);
-      if (at == null) continue;
-      const d = Math.abs(at - t);
-      if (d < bestDist) { bestDist = d; best = a; }
-    }
-    // only select if click is reasonably close (< 1 day)
-    if (best && bestDist < 86400) {
-      showAccountDetail(best);
-    }
-  });
 }
 
 function buildMarkers(accounts) {
@@ -487,24 +431,131 @@ function applyMarkersForVisibleRange(range) {
 }
 
 function populatePriceChart(b) {
-  const candles = b.candles_m15.map(c => ({
-    time: c.t, open: c.o, high: c.h, low: c.l, close: c.c,
-  }));
-  state.candleSeries.setData(candles);
-  if (candles.length) {
-    state.fullPriceRange = [candles[0].time, candles[candles.length - 1].time];
+  const pcEl = state._plotlyDiv;
+  const dates = b.candles_m15.map(c => new Date(c.t * 1000));
+  const opens = b.candles_m15.map(c => c.o);
+  const highs = b.candles_m15.map(c => c.h);
+  const lows = b.candles_m15.map(c => c.l);
+  const closes = b.candles_m15.map(c => c.c);
+
+  if (dates.length) {
+    state.fullPriceRange = [b.candles_m15[0].t, b.candles_m15[b.candles_m15.length - 1].t];
   }
 
-  // Store the FULL marker set (with _kind preserved) so the LOD culler can
-  // re-filter on every zoom change. The initial setMarkers call is replaced
-  // by applyMarkersForVisibleRange once the bank chart is also ready.
-  const raw = buildMarkers(b.accounts);
-  raw.sort((a, b) => a.time - b.time);
-  state.fullPriceMarkers = raw;
-  // Apply an initial cull based on the full data extent (the subsequent
-  // fitContent + visibleRangeChange event will re-apply on first zoom).
-  state.candleSeries.setMarkers(cullPriceMarkers(raw, 150).map(stripInternal));
-  state.priceChart.timeScale().fitContent();
+  // Account deploy/blowup annotations
+  const deployX = [], deployY = [], deployText = [], deployColor = [];
+  const blowupX = [], blowupY = [], blowupText = [];
+  for (const a of b.accounts) {
+    const dt = toUnix(a.deploy_time);
+    if (dt != null) {
+      const idx = _findCandleIdx(b.candles_m15, dt);
+      deployX.push(new Date(dt * 1000));
+      deployY.push(idx >= 0 ? b.candles_m15[idx].l - 0.0003 : null);
+      deployText.push(`#${a.num}`);
+      const c = (a.outcome === "survived" || a.outcome === "blowup_profit") ? COLORS.green
+              : a.outcome === "total_loss" ? COLORS.gray : COLORS.red;
+      deployColor.push(c);
+    }
+    const bt = toUnix(a.blowup_time);
+    if (bt != null && a.blowup) {
+      const idx = _findCandleIdx(b.candles_m15, bt);
+      blowupX.push(new Date(bt * 1000));
+      blowupY.push(idx >= 0 ? b.candles_m15[idx].h + 0.0003 : null);
+      blowupText.push(`×${a.num}`);
+    }
+  }
+
+  const traces = [
+    {
+      type: "candlestick", x: dates, open: opens, high: highs, low: lows, close: closes,
+      increasing: { line: { color: "#6a7a90" }, fillcolor: "#5a6a80" },
+      decreasing: { line: { color: "#5a6578" }, fillcolor: "#353f50" },
+      name: "EURGBP",
+      hoverinfo: "x+text",
+    },
+    {
+      type: "scatter", mode: "text+markers", x: deployX, y: deployY, text: deployText,
+      textposition: "bottom center", textfont: { size: 9, color: deployColor },
+      marker: { size: 6, color: deployColor, symbol: "triangle-up" },
+      name: "Deploy", hoverinfo: "text",
+    },
+    {
+      type: "scatter", mode: "text+markers", x: blowupX, y: blowupY, text: blowupText,
+      textposition: "top center", textfont: { size: 9, color: COLORS.red },
+      marker: { size: 6, color: COLORS.red, symbol: "triangle-down" },
+      name: "Blowup", hoverinfo: "text",
+    },
+  ];
+
+  const layout = {
+    paper_bgcolor: COLORS.surface, plot_bgcolor: COLORS.surface,
+    font: { color: COLORS.text, family: "Inter, sans-serif", size: 11 },
+    margin: { l: 50, r: 60, t: 10, b: 30 },
+    xaxis: {
+      type: "date", rangeslider: { visible: false },
+      gridcolor: COLORS.border, linecolor: COLORS.border,
+      tickformat: "%b %d",
+    },
+    yaxis: {
+      gridcolor: COLORS.border, linecolor: COLORS.border,
+      tickformat: ".5f", side: "right",
+    },
+    showlegend: false,
+    dragmode: "zoom",
+    hovermode: "x unified",
+  };
+
+  Plotly.newPlot(pcEl, traces, layout, {
+    responsive: true, displayModeBar: false, scrollZoom: true,
+  });
+  state._plotlyReady = true;
+  state._plotlyBaseTraceCount = traces.length;
+
+  // Click handler — find closest account to clicked x position
+  pcEl.on("plotly_click", data => {
+    if (!data || !data.points || !data.points.length) return;
+    const clickDate = new Date(data.points[0].x).getTime() / 1000;
+    const bndl = state.currentBundle;
+    if (!bndl) return;
+    let best = null, bestDist = Infinity;
+    for (const a of bndl.accounts) {
+      const at = toUnix(a.deploy_time);
+      if (at == null) continue;
+      const d = Math.abs(at - clickDate);
+      if (d < bestDist) { bestDist = d; best = a; }
+    }
+    if (best && bestDist < 86400) showAccountDetail(best);
+  });
+
+  // Sync bank chart to Plotly's x-axis range
+  pcEl.on("plotly_relayout", data => {
+    if (!state.bankChart || !state.bankSeries) return;
+    const bankData = state.bankSeries.data();
+    if (!bankData || bankData.length === 0) return;
+    let from, to;
+    if (data["xaxis.range[0]"] && data["xaxis.range[1]"]) {
+      from = new Date(data["xaxis.range[0]"]).getTime() / 1000;
+      to = new Date(data["xaxis.range[1]"]).getTime() / 1000;
+    } else if (data["xaxis.autorange"]) {
+      if (!state.fullPriceRange) return;
+      from = state.fullPriceRange[0];
+      to = state.fullPriceRange[1];
+    } else return;
+    try {
+      state.bankChart.timeScale().setVisibleRange({ from, to });
+    } catch (e) {}
+  });
+}
+
+function _findCandleIdx(candles, unix) {
+  // Binary search for closest candle to a unix timestamp
+  let lo = 0, hi = candles.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (candles[mid].t < unix) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return Math.min(lo, candles.length - 1);
 }
 
 function populateBankChart(b) {
@@ -609,19 +660,18 @@ function clearTraceOverlay() {
     state.bankChart.removeSeries(state.traceBalanceSeries);
     state.traceBalanceSeries = null;
   }
-  for (const s of (state.tracePositionLines || [])) {
-    try { state.priceChart.removeSeries(s); } catch (e) {}
+  // Remove Plotly overlay traces (everything after the base traces)
+  if (state._plotlyReady && state._plotlyDiv && state._plotlyBaseTraceCount != null) {
+    const nTotal = (state._plotlyDiv.data || []).length;
+    const nOverlay = nTotal - state._plotlyBaseTraceCount;
+    if (nOverlay > 0) {
+      const indices = [];
+      for (let i = state._plotlyBaseTraceCount; i < nTotal; i++) indices.push(i);
+      Plotly.deleteTraces(state._plotlyDiv, indices);
+    }
   }
-  state.tracePositionLines = [];
-  if (state._traceTickHandler && state.priceChart) {
-    state.priceChart.timeScale().unsubscribeVisibleTimeRangeChange(state._traceTickHandler);
-    state._traceTickHandler = null;
-  }
-  state._allTraceTicks = null;
   state.traceActive = false;
-  state.traceEntryMarkers = null;
   state._tracedAccountNum = null;
-  applyMarkersForVisibleRange();
 }
 
 function showTraceOverlay(a) {
@@ -632,113 +682,87 @@ function showTraceOverlay(a) {
   state._tracedAccountNum = a.num;
 
   const entries = trace.grid_entry_events || [];
-  const blowupT = toUnix(a.blowup_time);
-  state.tracePositionLines = [];
 
-  // All ticks (entries + closes) stored for lazy rendering.
-  // Only ticks in the visible time range get line series (max ~100 at once).
-  const allTicks = [];
+  // Build scatter traces — one per category. Plotly handles 1000+ points trivially.
+  const buyX = [], buyY = [];
+  const sellX = [], sellY = [];
+  const tpBuyX = [], tpBuyY = [];
+  const tpSellX = [], tpSellY = [];
+  const wdX = [], wdY = [], wdText = [];
+
   for (const e of entries) {
-    const t15 = Math.floor(e.time_unix / 900) * 900;
+    const d = new Date(e.time_unix * 1000);
     const isBuy = (e.dir || "").toLowerCase() === "buy";
-    allTicks.push({ t: t15, v: e.price, color: isBuy ? COLORS.green : COLORS.red });
+    if (isBuy) { buyX.push(d); buyY.push(e.price); }
+    else { sellX.push(d); sellY.push(e.price); }
   }
+
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
     const cp = ev.close_price || 0;
     if (!t || !cp) continue;
-    const t15 = Math.floor(t / 900) * 900;
+    const d = new Date(t * 1000);
     const side = (ev.closed_basket || "").toLowerCase();
-    allTicks.push({ t: t15, v: cp, color: side === "buy" ? COLORS.blue : COLORS.purple });
-  }
-  allTicks.sort((a, b) => a.t - b.t);
-  state._allTraceTicks = allTicks;
-
-  function renderVisibleTicks() {
-    // Remove old tick series
-    for (const s of (state.tracePositionLines || [])) {
-      try { state.priceChart.removeSeries(s); } catch (e) {}
-    }
-    state.tracePositionLines = [];
-
-    const range = state.priceChart.timeScale().getVisibleRange();
-    if (!range) return;
-
-    // Find ticks in visible range (binary search-ish via filter)
-    const visible = allTicks.filter(tk => tk.t >= range.from && tk.t <= range.to);
-
-    // Cap to prevent crash — if zoomed way out, show evenly sampled subset
-    const MAX = 120;
-    let toRender = visible;
-    if (visible.length > MAX) {
-      const step = Math.ceil(visible.length / MAX);
-      toRender = visible.filter((_, i) => i % step === 0);
-    }
-
-    for (const tk of toRender) {
-      const s = state.priceChart.addLineSeries({
-        color: tk.color,
-        lineWidth: 2, lineStyle: 0,
-        priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      s.setData([{ time: tk.t, value: tk.v }, { time: tk.t + 900, value: tk.v }]);
-      state.tracePositionLines.push(s);
-    }
+    if (side === "buy") { tpBuyX.push(d); tpBuyY.push(cp); }
+    else { tpSellX.push(d); tpSellY.push(cp); }
   }
 
-  renderVisibleTicks();
+  // Find price range for withdrawal annotation placement
+  const allPrices = [...buyY, ...sellY];
+  const priceHigh = allPrices.length ? Math.max(...allPrices) + 0.0005 : 0;
 
-  // Re-render on zoom/scroll with debounce to avoid lag
-  let _tickDebounce = null;
-  state._traceTickHandler = () => {
-    clearTimeout(_tickDebounce);
-    _tickDebounce = setTimeout(renderVisibleTicks, 200);
-  };
-  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(state._traceTickHandler);
-
-  // Withdrawal + blowup as text markers
-  const markers = [];
   for (const ev of (trace.withdrawal_events || [])) {
-    const t15 = Math.floor(ev.time_unix / 900) * 900;
-    markers.push({
-      time: t15, position: "aboveBar", color: COLORS.gold,
-      shape: "arrowDown", text: `$${Math.round(ev.amount)}`, size: 0,
-    });
+    const d = new Date(ev.time_unix * 1000);
+    wdX.push(d); wdY.push(priceHigh);
+    wdText.push(`$${Math.round(ev.amount)}`);
   }
-  if (a.blowup && blowupT) {
-    const t15 = Math.floor(blowupT / 900) * 900;
-    markers.push({
-      time: t15, position: "aboveBar", color: COLORS.red,
-      shape: "square", text: "BLOWUP", size: 1,
-    });
+
+  const newTraces = [];
+
+  if (buyX.length) newTraces.push({
+    type: "scatter", mode: "markers", x: buyX, y: buyY,
+    marker: { size: 5, color: COLORS.green, symbol: "line-ew", line: { width: 2, color: COLORS.green } },
+    name: "BUY entry", hoverinfo: "y",
+  });
+  if (sellX.length) newTraces.push({
+    type: "scatter", mode: "markers", x: sellX, y: sellY,
+    marker: { size: 5, color: COLORS.red, symbol: "line-ew", line: { width: 2, color: COLORS.red } },
+    name: "SELL entry", hoverinfo: "y",
+  });
+  if (tpBuyX.length) newTraces.push({
+    type: "scatter", mode: "markers", x: tpBuyX, y: tpBuyY,
+    marker: { size: 5, color: COLORS.blue, symbol: "line-ew", line: { width: 2, color: COLORS.blue } },
+    name: "BUY TP", hoverinfo: "y",
+  });
+  if (tpSellX.length) newTraces.push({
+    type: "scatter", mode: "markers", x: tpSellX, y: tpSellY,
+    marker: { size: 5, color: COLORS.purple, symbol: "line-ew", line: { width: 2, color: COLORS.purple } },
+    name: "SELL TP", hoverinfo: "y",
+  });
+  if (wdX.length) newTraces.push({
+    type: "scatter", mode: "text", x: wdX, y: wdY, text: wdText,
+    textposition: "top center", textfont: { size: 9, color: COLORS.gold },
+    name: "Withdrawal", hoverinfo: "text",
+  });
+
+  if (newTraces.length) {
+    Plotly.addTraces(state._plotlyDiv, newTraces);
   }
-  markers.sort((a, b) => a.time - b.time);
-  state.traceEntryMarkers = markers;
-  applyMarkersForVisibleRange();
 
   // Equity + balance curves on the bank chart (only 2 series)
   const eqSnaps = trace.equity_snapshots || [];
   if (eqSnaps.length > 0) {
     state.traceEquitySeries = state.bankChart.addLineSeries({
-      color: "#f0883e",
-      lineWidth: 2,
-      lineType: 0,
-      title: `Equity #${a.num}`,
+      color: "#f0883e", lineWidth: 2, lineType: 0, title: `Equity #${a.num}`,
     });
     state.traceBalanceSeries = state.bankChart.addLineSeries({
-      color: "#58a6ff",
-      lineWidth: 1,
-      lineType: 1,
-      lineStyle: 2,
-      title: `Balance #${a.num}`,
+      color: "#58a6ff", lineWidth: 1, lineType: 1, lineStyle: 2, title: `Balance #${a.num}`,
     });
     const dedup = (arr, key) => {
       const out = [];
       let lastT = null;
       for (const p of arr) {
-        const t = p.time_unix;
-        const v = p[key];
+        const t = p.time_unix; const v = p[key];
         if (t == null || v == null) continue;
         if (t === lastT) out[out.length - 1] = { time: t, value: v };
         else out.push({ time: t, value: v });
@@ -838,9 +862,18 @@ function zoomToAccount(a) {
   const from = toUnix(a.deploy_time);
   const to = toUnix(a.blowup_time) || from + 86400;
   if (!from || !to) return;
-  // pad by 10% on each side
   const pad = Math.max(3600, (to - from) * 0.15);
-  state.priceChart.timeScale().setVisibleRange({ from: from - pad, to: to + pad });
+  const fromDate = new Date((from - pad) * 1000).toISOString();
+  const toDate = new Date((to + pad) * 1000).toISOString();
+  if (state._plotlyReady) {
+    Plotly.relayout(state._plotlyDiv, { "xaxis.range": [fromDate, toDate] });
+  }
+  // Also sync bank chart
+  if (state.bankChart) {
+    try {
+      state.bankChart.timeScale().setVisibleRange({ from: from - pad, to: to + pad });
+    } catch (e) {}
+  }
 }
 
 function navigateAccount(currentNum, dir) {
@@ -854,7 +887,7 @@ function navigateAccount(currentNum, dir) {
 }
 
 function resetZoom() {
-  if (state.priceChart) state.priceChart.timeScale().fitContent();
+  if (state._plotlyReady) Plotly.relayout(state._plotlyDiv, { "xaxis.autorange": true, "yaxis.autorange": true });
   if (state.bankChart) state.bankChart.timeScale().fitContent();
 }
 
