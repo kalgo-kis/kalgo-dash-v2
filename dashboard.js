@@ -619,6 +619,21 @@ function clearTraceOverlay() {
     state.candleSeries.setMarkers([]);
     state._traceMarkersActive = false;
   }
+  // Clear canvas overlay
+  const cvs = document.getElementById("trade-overlay-canvas");
+  if (cvs) {
+    const ctx = cvs.getContext("2d");
+    ctx.clearRect(0, 0, cvs.width, cvs.height);
+  }
+  if (state._tradeOverlayHandler && state.priceChart) {
+    state.priceChart.timeScale().unsubscribeVisibleTimeRangeChange(state._tradeOverlayHandler);
+    state._tradeOverlayHandler = null;
+  }
+  if (state._tradeOverlayCrosshair && state.priceChart) {
+    state.priceChart.unsubscribeCrosshairMove(state._tradeOverlayCrosshair);
+    state._tradeOverlayCrosshair = null;
+  }
+  state._tradeOverlayItems = null;
   state.traceActive = false;
   state.traceEntryMarkers = null;
   state._tracedAccountNum = null;
@@ -653,64 +668,77 @@ function showTraceOverlay(a) {
   // exact prices. The series itself is invisible (lineWidth: 0), only
   // the markers render — giving us price-level dots without 500 series.
 
-  function buildTickSeries(items, color) {
-    if (items.length === 0) return;
-    // Deduplicate and sort by time
-    const deduped = [];
-    const seen = new Set();
-    for (const item of items) {
-      const t = Math.floor(item.t / 900) * 900;
-      const key = `${t}_${item.v.toFixed(5)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduped.push({ time: t, value: item.v });
-    }
-    deduped.sort((a, b) => a.time - b.time);
-    // Ensure strictly increasing times
-    for (let i = 1; i < deduped.length; i++) {
-      if (deduped[i].time <= deduped[i - 1].time) {
-        deduped[i].time = deduped[i - 1].time + 1;
-      }
-    }
+  // ── Canvas overlay for trade dots ──────────────────────────────────
+  // LightweightCharts line series can't overlay without affecting the
+  // price scale. Instead, draw dots directly on an HTML canvas positioned
+  // over the chart, using the chart's coordinate conversion API.
 
-    const s = state.priceChart.addLineSeries({
-      color: color,
-      lineWidth: 0,
-      lineVisible: false,
-      pointMarkersVisible: true,
-      pointMarkersRadius: 3,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-      crosshairMarkerRadius: 3,
-      priceScaleId: '',  // overlay on the main chart without affecting its scale
-    });
-    s.setData(deduped);
-    state.tracePositionLines.push(s);
-  }
-
-  const buyItems = [];
-  const sellItems = [];
-  const tpBuyItems = [];
-  const tpSellItems = [];
-
+  const tradeItems = [];
   for (const e of entries) {
     const isBuy = (e.dir || "").toLowerCase() === "buy";
-    (isBuy ? buyItems : sellItems).push({ t: e.time_unix, v: e.price });
+    tradeItems.push({ t: e.time_unix, v: e.price, color: isBuy ? COLORS.green : COLORS.red });
   }
-
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
     const cp = ev.close_price || 0;
     if (!t || !cp) continue;
     const side = (ev.closed_basket || "").toLowerCase();
-    (side === "buy" ? tpBuyItems : tpSellItems).push({ t, v: cp });
+    tradeItems.push({ t, v: cp, color: side === "buy" ? COLORS.blue : COLORS.purple });
   }
 
-  buildTickSeries(buyItems, COLORS.green);
-  buildTickSeries(sellItems, COLORS.red);
-  buildTickSeries(tpBuyItems, COLORS.blue);    // blue for buy TP
-  buildTickSeries(tpSellItems, COLORS.purple); // purple for sell TP
+  // Create canvas overlay
+  const chartEl = document.getElementById("price-chart");
+  let canvas = document.getElementById("trade-overlay-canvas");
+  if (!canvas) {
+    canvas = document.createElement("canvas");
+    canvas.id = "trade-overlay-canvas";
+    canvas.style.cssText = "position:absolute;top:0;left:0;pointer-events:none;z-index:10;";
+    chartEl.style.position = "relative";
+    chartEl.appendChild(canvas);
+  }
+
+  state._tradeOverlayItems = tradeItems;
+  state._tradeOverlayCanvas = canvas;
+
+  function drawTradeOverlay() {
+    const items = state._tradeOverlayItems;
+    const cvs = state._tradeOverlayCanvas;
+    if (!items || !cvs || !state.priceChart || !state.candleSeries) return;
+
+    const rect = chartEl.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    cvs.width = rect.width * dpr;
+    cvs.height = rect.height * dpr;
+    cvs.style.width = rect.width + "px";
+    cvs.style.height = rect.height + "px";
+
+    const ctx = cvs.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    const ts = state.priceChart.timeScale();
+    const ps = state.candleSeries.priceScale();
+
+    for (const item of items) {
+      const t15 = Math.floor(item.t / 900) * 900;
+      const x = ts.timeToCoordinate(t15);
+      const y = state.candleSeries.priceToCoordinate(item.v);
+      if (x === null || y === null || x < 0 || y < 0) continue;
+
+      // Draw a small horizontal tick (6px wide, 2px tall)
+      ctx.fillStyle = item.color;
+      ctx.fillRect(x - 3, y - 1, 6, 2);
+    }
+  }
+
+  drawTradeOverlay();
+
+  // Redraw on zoom/scroll
+  state._tradeOverlayHandler = () => drawTradeOverlay();
+  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(state._tradeOverlayHandler);
+  // Also redraw on price scale changes (vertical zoom)
+  state._tradeOverlayCrosshair = () => drawTradeOverlay();
+  state.priceChart.subscribeCrosshairMove(state._tradeOverlayCrosshair);
 
   // Withdrawal + blowup as text markers on candle series
   const markers = [];
