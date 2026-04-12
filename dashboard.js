@@ -694,13 +694,29 @@ function showTraceOverlay(a) {
 
     const ts = state.priceChart.timeScale();
 
+    // Calculate offset: LWC coordinates are relative to the chart pane,
+    // but our canvas covers the full #price-chart div. Find the pane's
+    // position within the div by locating LWC's own canvas element.
+    const chartEl = document.getElementById("price-chart");
+    const lwcCanvas = chartEl.querySelector("canvas");
+    let offsetX = 0, offsetY = 0;
+    if (lwcCanvas) {
+      const chartRect = chartEl.getBoundingClientRect();
+      const paneRect = lwcCanvas.getBoundingClientRect();
+      offsetX = paneRect.left - chartRect.left;
+      offsetY = paneRect.top - chartRect.top;
+    }
+
     for (const tk of allTicks) {
       const x = ts.timeToCoordinate(tk.t);
-      if (x === null || x < 0 || x > w) continue;
+      if (x === null) continue;
       const y = state.candleSeries.priceToCoordinate(tk.v);
-      if (y === null || y < 0 || y > h) continue;
+      if (y === null) continue;
+      const px = x + offsetX;
+      const py = y + offsetY;
+      if (px < 0 || px > w || py < 0 || py > h) continue;
       ctx.fillStyle = tk.color;
-      ctx.fillRect(x - 4, y - 1, 8, 2);
+      ctx.fillRect(px - 4, py - 1, 8, 2);
     }
 
     state._traceAnimFrame = requestAnimationFrame(drawFrame);
