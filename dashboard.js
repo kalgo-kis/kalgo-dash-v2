@@ -613,6 +613,10 @@ function clearTraceOverlay() {
     try { state.priceChart.removeSeries(s); } catch (e) {}
   }
   state.tracePositionLines = [];
+  if (state._traceTickHandler && state.priceChart) {
+    state.priceChart.timeScale().unsubscribeVisibleTimeRangeChange(state._traceTickHandler);
+    state._traceTickHandler = null;
+  }
   state.traceActive = false;
   state.traceEntryMarkers = null;
   state._tracedAccountNum = null;
@@ -647,37 +651,57 @@ function showTraceOverlay(a) {
   }
   allTicks.sort((a, b) => a.t - b.t);
 
-  // 4 line series with whitespace gaps — one per tick color.
-  // Each tick: 2 data points (horizontal line) + 1 whitespace (gap).
-  // All entries rendered, no cap, no crash — only 4 series total.
-  const groups = {};
-  for (const tk of allTicks) {
-    if (!groups[tk.color]) groups[tk.color] = [];
-    groups[tk.color].push(tk);
-  }
-
-  for (const [color, ticks] of Object.entries(groups)) {
-    const data = [];
-    let lastT = 0;
-    for (const tk of ticks) {
-      // Ensure strictly increasing time (offset duplicates)
-      let t = tk.t;
-      if (t <= lastT) t = lastT + 2;
-      data.push({ time: t, value: tk.v });
-      data.push({ time: t + 1, value: tk.v });
-      data.push({ time: t + 2 });  // whitespace gap (no value = gap)
-      lastT = t + 2;
-    }
-
+  // Series pool: create 200 line series ONCE. On scroll, reassign their
+  // data to show visible ticks. setData() is cheap; addLineSeries/removeSeries
+  // is expensive. Pool stays alive until clearTraceOverlay().
+  const POOL_SIZE = 200;
+  const pool = [];
+  // Pre-create all series (one-time cost)
+  for (let i = 0; i < POOL_SIZE; i++) {
     const s = state.priceChart.addLineSeries({
-      color: color,
-      lineWidth: 2, lineStyle: 0,
+      color: COLORS.green, lineWidth: 2, lineStyle: 0,
       priceLineVisible: false, lastValueVisible: false,
       crosshairMarkerVisible: false,
     });
-    s.setData(data);
-    state.tracePositionLines.push(s);
+    s.setData([]);
+    pool.push(s);
   }
+  state.tracePositionLines = pool;
+
+  function assignVisibleTicks() {
+    const range = state.priceChart.timeScale().getVisibleRange();
+    if (!range) return;
+    const visible = allTicks.filter(tk => tk.t >= range.from && tk.t <= range.to);
+
+    // If more visible ticks than pool slots, evenly sample
+    let toShow = visible;
+    if (visible.length > POOL_SIZE) {
+      const step = visible.length / POOL_SIZE;
+      toShow = [];
+      for (let i = 0; i < POOL_SIZE; i++) toShow.push(visible[Math.floor(i * step)]);
+    }
+
+    // Assign ticks to pool series; clear unused ones
+    for (let i = 0; i < POOL_SIZE; i++) {
+      if (i < toShow.length) {
+        const tk = toShow[i];
+        pool[i].applyOptions({ color: tk.color });
+        pool[i].setData([{ time: tk.t, value: tk.v }, { time: tk.t + 900, value: tk.v }]);
+      } else {
+        pool[i].setData([]);
+      }
+    }
+  }
+
+  assignVisibleTicks();
+
+  // Re-assign on zoom/scroll (debounced — setData is cheap, no series churn)
+  let _debounce = null;
+  state._traceTickHandler = () => {
+    clearTimeout(_debounce);
+    _debounce = setTimeout(assignVisibleTicks, 100);
+  };
+  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(state._traceTickHandler);
 
   // Withdrawal + blowup as text markers
   const markers = [];
