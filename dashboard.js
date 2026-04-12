@@ -713,11 +713,10 @@ function showTraceOverlay(a) {
   // Sort markers by time (required by LightweightCharts)
   markers.sort((a, b) => a.time - b.time);
 
-  // Apply markers to the existing candle series (no new series needed)
-  if (state.candleSeries && markers.length > 0) {
-    state.candleSeries.setMarkers(markers);
-    state._traceMarkersActive = true;
-  }
+  // Store in traceEntryMarkers so applyMarkersForVisibleRange merges them
+  // with the LOD account markers on every zoom/scroll.
+  state.traceEntryMarkers = markers;
+  applyMarkersForVisibleRange();
 
   // Equity + balance curves on the bank chart (only 2 series)
   const eqSnaps = trace.equity_snapshots || [];
