@@ -694,61 +694,16 @@ function showTraceOverlay(a) {
 
     const ts = state.priceChart.timeScale();
 
-    // Calculate offset: LWC coordinates are relative to the chart pane,
-    // but our canvas covers the full #price-chart div. Find the pane
-    // by locating the LARGEST internal canvas (the main pane, not the
-    // price scale or time axis canvases).
-    const chartDiv = document.getElementById("price-chart");
-    const allCanvases = chartDiv.querySelectorAll("canvas");
-    let lwcCanvas = null, maxArea = 0;
-    for (const c of allCanvases) {
-      if (c.id === "trade-overlay-canvas") continue;
-      const area = c.clientWidth * c.clientHeight;
-      if (area > maxArea) { maxArea = area; lwcCanvas = c; }
-    }
-    let offsetX = 0, offsetY = 0;
-    if (lwcCanvas) {
-      const chartRect = chartDiv.getBoundingClientRect();
-      const paneRect = lwcCanvas.getBoundingClientRect();
-      offsetX = paneRect.left - chartRect.left;
-      offsetY = paneRect.top - chartRect.top;
-    }
-
-    // DEBUG: draw pane boundary so we can see where coordinates map
-    ctx.strokeStyle = "rgba(255,0,0,0.5)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(offsetX, offsetY,
-      lwcCanvas ? lwcCanvas.clientWidth : w,
-      lwcCanvas ? lwcCanvas.clientHeight : h);
-
-    // DEBUG: test dot at first tick — big yellow circle
-    if (allTicks.length > 0) {
-      const testTk = allTicks[0];
-      const testX = ts.timeToCoordinate(testTk.t);
-      const testY = state.candleSeries.priceToCoordinate(testTk.v);
-      if (testX !== null && testY !== null) {
-        ctx.fillStyle = "yellow";
-        ctx.beginPath();
-        ctx.arc(testX + offsetX, testY + offsetY, 8, 0, Math.PI * 2);
-        ctx.fill();
-        // Also draw raw coords (no offset) as blue dot
-        ctx.fillStyle = "cyan";
-        ctx.beginPath();
-        ctx.arc(testX, testY, 6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
+    // No offset — coordinates from timeToCoordinate/priceToCoordinate
+    // appear to be relative to the chart container directly.
     for (const tk of allTicks) {
       const x = ts.timeToCoordinate(tk.t);
       if (x === null) continue;
       const y = state.candleSeries.priceToCoordinate(tk.v);
       if (y === null) continue;
-      const px = x + offsetX;
-      const py = y + offsetY;
-      if (px < 0 || px > w || py < 0 || py > h) continue;
+      if (x < 0 || x > w || y < 0 || y > h) continue;
       ctx.fillStyle = tk.color;
-      ctx.fillRect(px - 4, py - 1, 8, 2);
+      ctx.fillRect(x - 4, y - 1, 8, 2);
     }
 
     state._traceAnimFrame = requestAnimationFrame(drawFrame);
