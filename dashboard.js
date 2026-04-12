@@ -659,19 +659,15 @@ function showTraceOverlay(a) {
   // Renders all ticks as 8x2px rectangles at exact prices using
   // LightweightCharts coordinate API. Canvas redraws every frame
   // so it tracks zoom/scroll perfectly with zero lag.
-  // Position canvas over the chart pane by finding the internal canvas
-  // that LightweightCharts creates and matching its position exactly.
   const chartEl = document.getElementById("price-chart");
-  const lwcCanvas = chartEl.querySelector("canvas");
-  const pane = lwcCanvas ? lwcCanvas.parentElement : chartEl;
 
   let canvas = document.getElementById("trade-overlay-canvas");
   if (canvas) canvas.remove();
   canvas = document.createElement("canvas");
   canvas.id = "trade-overlay-canvas";
-  canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;";
-  pane.style.position = "relative";
-  pane.appendChild(canvas);
+  canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:100;";
+  chartEl.style.position = "relative";
+  chartEl.appendChild(canvas);
 
   state._traceCanvas = canvas;
   state._traceAnimFrame = null;
