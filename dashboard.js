@@ -648,33 +648,18 @@ function showTraceOverlay(a) {
   const accountEnd = blowupT || (toUnix(a.deploy_time) + 86400);
   state.tracePositionLines = [];
 
-  // Build close-time list for position lifetime calculation
-  const closeTimes = [];
-  for (const ev of (a.basket_close_events || [])) {
-    const t = toUnix(ev.time);
-    if (t) closeTimes.push({ t, side: (ev.closed_basket || "").toLowerCase() });
-  }
-
-  function findEndTime(entryTime, dir) {
-    for (const c of closeTimes) {
-      if (c.t > entryTime && c.side === dir) return c.t;
-    }
-    return accountEnd;
-  }
-
-  // Build line data: each entry → a horizontal segment [entry_time, end_time] at entry price
+  // Build line data: each entry → a 2-bar horizontal tick at exact price
   const buyData = [];
   const sellData = [];
 
   for (const e of entries) {
     const t = Math.floor(e.time_unix / 900) * 900;
     const dir = (e.dir || "").toLowerCase();
-    const end = Math.floor(findEndTime(e.time_unix, dir) / 900) * 900;
     const arr = dir === "buy" ? buyData : sellData;
-    // Each segment: start point, end point, then a NaN gap
+    // 2-bar tick + NaN gap
     arr.push({ time: t, value: e.price });
-    arr.push({ time: Math.max(t + 900, end), value: e.price });
-    arr.push({ time: Math.max(t + 900, end) + 1, value: NaN }); // gap
+    arr.push({ time: t + 900, value: e.price });
+    arr.push({ time: t + 901, value: NaN });
   }
 
   // Sort by time (required)
@@ -728,7 +713,7 @@ function showTraceOverlay(a) {
     const t15 = Math.floor(ev.time_unix / 900) * 900;
     markers.push({
       time: t15, position: "aboveBar", color: COLORS.gold,
-      shape: "square", text: `$${Math.round(ev.amount)}`, size: 0,
+      shape: "circle", text: `$${Math.round(ev.amount)}`, size: 0,
     });
   }
 
