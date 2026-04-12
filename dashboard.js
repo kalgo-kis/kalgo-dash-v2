@@ -609,31 +609,10 @@ function clearTraceOverlay() {
     state.bankChart.removeSeries(state.traceBalanceSeries);
     state.traceBalanceSeries = null;
   }
-  // Remove any legacy position line series from the price chart.
   for (const s of (state.tracePositionLines || [])) {
     try { state.priceChart.removeSeries(s); } catch (e) {}
   }
   state.tracePositionLines = [];
-  // Clear markers from candle series
-  if (state._traceMarkersActive && state.candleSeries) {
-    state.candleSeries.setMarkers([]);
-    state._traceMarkersActive = false;
-  }
-  // Clear canvas overlay
-  const cvs = document.getElementById("trade-overlay-canvas");
-  if (cvs) {
-    const ctx = cvs.getContext("2d");
-    ctx.clearRect(0, 0, cvs.width, cvs.height);
-  }
-  if (state._tradeOverlayHandler && state.priceChart) {
-    state.priceChart.timeScale().unsubscribeVisibleTimeRangeChange(state._tradeOverlayHandler);
-    state._tradeOverlayHandler = null;
-  }
-  if (state._tradeOverlayCrosshair && state.priceChart) {
-    state.priceChart.unsubscribeCrosshairMove(state._tradeOverlayCrosshair);
-    state._tradeOverlayCrosshair = null;
-  }
-  state._tradeOverlayItems = null;
   state.traceActive = false;
   state.traceEntryMarkers = null;
   state._tracedAccountNum = null;
@@ -647,102 +626,49 @@ function showTraceOverlay(a) {
   state.traceActive = true;
   state._tracedAccountNum = a.num;
 
-  // =====================================================================
-  // PRICE-LEVEL TRACE — horizontal ticks at exact entry prices.
-  //
-  // Uses 4 line series total (buy entries, sell entries, TP closes, WAPP),
-  // not one per entry. Each tick is a 30-min horizontal segment at the
-  // exact fill price, showing the grid structure visually.
-  //
-  // Close-time lookup: each entry's tick extends from fill time to the
-  // next basket close (TP) or blowup — showing the position's lifetime.
-  // =====================================================================
-
   const entries = trace.grid_entry_events || [];
   const blowupT = toUnix(a.blowup_time);
-  const accountEnd = blowupT || (toUnix(a.deploy_time) + 86400);
   state.tracePositionLines = [];
 
-  // 3 line series total: BUY entries, SELL entries, TP closes.
-  // Each series uses markers with crosshairMarkerRadius to show dots at
-  // exact prices. The series itself is invisible (lineWidth: 0), only
-  // the markers render — giving us price-level dots without 500 series.
+  // Individual 1-bar line series per trade tick, exactly like the old
+  // dashboard. Capped at 150 entries to avoid browser crash (old bundles
+  // had 30-40 entries; new v3 bundles can have 500+).
+  const MAX_TICKS = 150;
+  const recentEntries = entries.length > MAX_TICKS
+    ? entries.slice(entries.length - MAX_TICKS) : entries;
 
-  // ── Canvas overlay for trade dots ──────────────────────────────────
-  // LightweightCharts line series can't overlay without affecting the
-  // price scale. Instead, draw dots directly on an HTML canvas positioned
-  // over the chart, using the chart's coordinate conversion API.
-
-  const tradeItems = [];
-  for (const e of entries) {
+  for (const e of recentEntries) {
+    const t15 = Math.floor(e.time_unix / 900) * 900;
     const isBuy = (e.dir || "").toLowerCase() === "buy";
-    tradeItems.push({ t: e.time_unix, v: e.price, color: isBuy ? COLORS.green : COLORS.red });
+    const s = state.priceChart.addLineSeries({
+      color: isBuy ? COLORS.green : COLORS.red,
+      lineWidth: 2, lineStyle: 0,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    s.setData([{ time: t15, value: e.price }, { time: t15 + 900, value: e.price }]);
+    state.tracePositionLines.push(s);
   }
+
+  // TP close ticks — blue for buy TP, purple for sell TP
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
     const cp = ev.close_price || 0;
     if (!t || !cp) continue;
+    const t15 = Math.floor(t / 900) * 900;
     const side = (ev.closed_basket || "").toLowerCase();
-    tradeItems.push({ t, v: cp, color: side === "buy" ? COLORS.blue : COLORS.purple });
+    const s = state.priceChart.addLineSeries({
+      color: side === "buy" ? COLORS.blue : COLORS.purple,
+      lineWidth: 2, lineStyle: 0,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    s.setData([{ time: t15, value: cp }, { time: t15 + 900, value: cp }]);
+    state.tracePositionLines.push(s);
   }
 
-  // Create canvas overlay
-  const chartEl = document.getElementById("price-chart");
-  let canvas = document.getElementById("trade-overlay-canvas");
-  if (!canvas) {
-    canvas = document.createElement("canvas");
-    canvas.id = "trade-overlay-canvas";
-    canvas.style.cssText = "position:absolute;top:0;left:0;pointer-events:none;z-index:10;";
-    chartEl.style.position = "relative";
-    chartEl.appendChild(canvas);
-  }
-
-  state._tradeOverlayItems = tradeItems;
-  state._tradeOverlayCanvas = canvas;
-
-  function drawTradeOverlay() {
-    const items = state._tradeOverlayItems;
-    const cvs = state._tradeOverlayCanvas;
-    if (!items || !cvs || !state.priceChart || !state.candleSeries) return;
-
-    const rect = chartEl.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    cvs.width = rect.width * dpr;
-    cvs.height = rect.height * dpr;
-    cvs.style.width = rect.width + "px";
-    cvs.style.height = rect.height + "px";
-
-    const ctx = cvs.getContext("2d");
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, rect.width, rect.height);
-
-    const ts = state.priceChart.timeScale();
-    const ps = state.candleSeries.priceScale();
-
-    for (const item of items) {
-      const t15 = Math.floor(item.t / 900) * 900;
-      const x = ts.timeToCoordinate(t15);
-      const y = state.candleSeries.priceToCoordinate(item.v);
-      if (x === null || y === null || x < 0 || y < 0) continue;
-
-      // Draw a small horizontal tick (6px wide, 2px tall)
-      ctx.fillStyle = item.color;
-      ctx.fillRect(x - 3, y - 1, 6, 2);
-    }
-  }
-
-  drawTradeOverlay();
-
-  // Redraw on zoom/scroll
-  state._tradeOverlayHandler = () => drawTradeOverlay();
-  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(state._tradeOverlayHandler);
-  // Also redraw on price scale changes (vertical zoom)
-  state._tradeOverlayCrosshair = () => drawTradeOverlay();
-  state.priceChart.subscribeCrosshairMove(state._tradeOverlayCrosshair);
-
-  // Withdrawal + blowup as text markers on candle series
+  // Withdrawal + blowup as text markers
   const markers = [];
-
   for (const ev of (trace.withdrawal_events || [])) {
     const t15 = Math.floor(ev.time_unix / 900) * 900;
     markers.push({
@@ -750,7 +676,6 @@ function showTraceOverlay(a) {
       shape: "arrowDown", text: `$${Math.round(ev.amount)}`, size: 0,
     });
   }
-
   if (a.blowup && blowupT) {
     const t15 = Math.floor(blowupT / 900) * 900;
     markers.push({
@@ -758,7 +683,6 @@ function showTraceOverlay(a) {
       shape: "square", text: "BLOWUP", size: 1,
     });
   }
-
   markers.sort((a, b) => a.time - b.time);
   state.traceEntryMarkers = markers;
   applyMarkersForVisibleRange();
