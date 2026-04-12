@@ -683,7 +683,7 @@ function showTraceOverlay(a) {
       lastValueVisible: false,
       crosshairMarkerVisible: false,
       crosshairMarkerRadius: 3,
-      autoscaleInfoProvider: () => null,  // don't affect price scale
+      priceScaleId: '',  // overlay on the main chart without affecting its scale
     });
     s.setData(deduped);
     state.tracePositionLines.push(s);
@@ -709,9 +709,8 @@ function showTraceOverlay(a) {
 
   buildTickSeries(buyItems, COLORS.green);
   buildTickSeries(sellItems, COLORS.red);
-  // TP closes: lighter shade of the basket's color
-  buildTickSeries(tpBuyItems, "#7ddb8a");   // light green
-  buildTickSeries(tpSellItems, "#ff9a8c");  // light red/salmon
+  buildTickSeries(tpBuyItems, COLORS.blue);    // blue for buy TP
+  buildTickSeries(tpSellItems, COLORS.purple); // purple for sell TP
 
   // Withdrawal + blowup as text markers on candle series
   const markers = [];
