@@ -647,17 +647,35 @@ function showTraceOverlay(a) {
   }
   allTicks.sort((a, b) => a.t - b.t);
 
-  // One-shot render: create one line series per tick. No cap, no sampling.
-  // Every trade must be visible for visual debugging. No scroll handler —
-  // ticks are static and survive zoom/scroll natively.
+  // 4 line series with whitespace gaps — one per tick color.
+  // Each tick: 2 data points (horizontal line) + 1 whitespace (gap).
+  // All entries rendered, no cap, no crash — only 4 series total.
+  const groups = {};
   for (const tk of allTicks) {
+    if (!groups[tk.color]) groups[tk.color] = [];
+    groups[tk.color].push(tk);
+  }
+
+  for (const [color, ticks] of Object.entries(groups)) {
+    const data = [];
+    let lastT = 0;
+    for (const tk of ticks) {
+      // Ensure strictly increasing time (offset duplicates)
+      let t = tk.t;
+      if (t <= lastT) t = lastT + 2;
+      data.push({ time: t, value: tk.v });
+      data.push({ time: t + 1, value: tk.v });
+      data.push({ time: t + 2 });  // whitespace gap (no value = gap)
+      lastT = t + 2;
+    }
+
     const s = state.priceChart.addLineSeries({
-      color: tk.color,
+      color: color,
       lineWidth: 2, lineStyle: 0,
       priceLineVisible: false, lastValueVisible: false,
       crosshairMarkerVisible: false,
     });
-    s.setData([{ time: tk.t, value: tk.v }, { time: tk.t + 900, value: tk.v }]);
+    s.setData(data);
     state.tracePositionLines.push(s);
   }
 
