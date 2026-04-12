@@ -613,6 +613,11 @@ function clearTraceOverlay() {
     try { state.priceChart.removeSeries(s); } catch (e) {}
   }
   state.tracePositionLines = [];
+  if (state._traceTickHandler && state.priceChart) {
+    state.priceChart.timeScale().unsubscribeVisibleTimeRangeChange(state._traceTickHandler);
+    state._traceTickHandler = null;
+  }
+  state._allTraceTicks = null;
   state.traceActive = false;
   state.traceEntryMarkers = null;
   state._tracedAccountNum = null;
@@ -630,42 +635,67 @@ function showTraceOverlay(a) {
   const blowupT = toUnix(a.blowup_time);
   state.tracePositionLines = [];
 
-  // Individual 1-bar line series per trade tick, exactly like the old
-  // dashboard. Capped at 150 entries to avoid browser crash (old bundles
-  // had 30-40 entries; new v3 bundles can have 500+).
-  const MAX_TICKS = 150;
-  const recentEntries = entries.length > MAX_TICKS
-    ? entries.slice(entries.length - MAX_TICKS) : entries;
-
-  for (const e of recentEntries) {
+  // All ticks (entries + closes) stored for lazy rendering.
+  // Only ticks in the visible time range get line series (max ~100 at once).
+  const allTicks = [];
+  for (const e of entries) {
     const t15 = Math.floor(e.time_unix / 900) * 900;
     const isBuy = (e.dir || "").toLowerCase() === "buy";
-    const s = state.priceChart.addLineSeries({
-      color: isBuy ? COLORS.green : COLORS.red,
-      lineWidth: 2, lineStyle: 0,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    s.setData([{ time: t15, value: e.price }, { time: t15 + 900, value: e.price }]);
-    state.tracePositionLines.push(s);
+    allTicks.push({ t: t15, v: e.price, color: isBuy ? COLORS.green : COLORS.red });
   }
-
-  // TP close ticks — blue for buy TP, purple for sell TP
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
     const cp = ev.close_price || 0;
     if (!t || !cp) continue;
     const t15 = Math.floor(t / 900) * 900;
     const side = (ev.closed_basket || "").toLowerCase();
-    const s = state.priceChart.addLineSeries({
-      color: side === "buy" ? COLORS.blue : COLORS.purple,
-      lineWidth: 2, lineStyle: 0,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    s.setData([{ time: t15, value: cp }, { time: t15 + 900, value: cp }]);
-    state.tracePositionLines.push(s);
+    allTicks.push({ t: t15, v: cp, color: side === "buy" ? COLORS.blue : COLORS.purple });
   }
+  allTicks.sort((a, b) => a.t - b.t);
+  state._allTraceTicks = allTicks;
+
+  function renderVisibleTicks() {
+    // Remove old tick series
+    for (const s of (state.tracePositionLines || [])) {
+      try { state.priceChart.removeSeries(s); } catch (e) {}
+    }
+    state.tracePositionLines = [];
+
+    const range = state.priceChart.timeScale().getVisibleRange();
+    if (!range) return;
+
+    // Find ticks in visible range (binary search-ish via filter)
+    const visible = allTicks.filter(tk => tk.t >= range.from && tk.t <= range.to);
+
+    // Cap to prevent crash — if zoomed way out, show evenly sampled subset
+    const MAX = 120;
+    let toRender = visible;
+    if (visible.length > MAX) {
+      const step = Math.ceil(visible.length / MAX);
+      toRender = visible.filter((_, i) => i % step === 0);
+    }
+
+    for (const tk of toRender) {
+      const s = state.priceChart.addLineSeries({
+        color: tk.color,
+        lineWidth: 2, lineStyle: 0,
+        priceLineVisible: false, lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData([{ time: tk.t, value: tk.v }, { time: tk.t + 900, value: tk.v }]);
+      state.tracePositionLines.push(s);
+    }
+  }
+
+  renderVisibleTicks();
+
+  // Re-render on zoom/scroll with debounce to avoid lag
+  let _tickDebounce = null;
+  state._traceTickHandler = () => {
+    clearTimeout(_tickDebounce);
+    _tickDebounce = setTimeout(renderVisibleTicks, 200);
+  };
+  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(state._traceTickHandler);
 
   // Withdrawal + blowup as text markers
   const markers = [];
