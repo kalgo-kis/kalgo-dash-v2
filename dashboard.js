@@ -714,6 +714,31 @@ function showTraceOverlay(a) {
       offsetY = paneRect.top - chartRect.top;
     }
 
+    // DEBUG: draw pane boundary so we can see where coordinates map
+    ctx.strokeStyle = "rgba(255,0,0,0.5)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(offsetX, offsetY,
+      lwcCanvas ? lwcCanvas.clientWidth : w,
+      lwcCanvas ? lwcCanvas.clientHeight : h);
+
+    // DEBUG: test dot at first tick — big yellow circle
+    if (allTicks.length > 0) {
+      const testTk = allTicks[0];
+      const testX = ts.timeToCoordinate(testTk.t);
+      const testY = state.candleSeries.priceToCoordinate(testTk.v);
+      if (testX !== null && testY !== null) {
+        ctx.fillStyle = "yellow";
+        ctx.beginPath();
+        ctx.arc(testX + offsetX, testY + offsetY, 8, 0, Math.PI * 2);
+        ctx.fill();
+        // Also draw raw coords (no offset) as blue dot
+        ctx.fillStyle = "cyan";
+        ctx.beginPath();
+        ctx.arc(testX, testY, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     for (const tk of allTicks) {
       const x = ts.timeToCoordinate(tk.t);
       if (x === null) continue;
