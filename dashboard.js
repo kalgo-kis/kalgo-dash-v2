@@ -695,13 +695,20 @@ function showTraceOverlay(a) {
     const ts = state.priceChart.timeScale();
 
     // Calculate offset: LWC coordinates are relative to the chart pane,
-    // but our canvas covers the full #price-chart div. Find the pane's
-    // position within the div by locating LWC's own canvas element.
-    const chartEl = document.getElementById("price-chart");
-    const lwcCanvas = chartEl.querySelector("canvas");
+    // but our canvas covers the full #price-chart div. Find the pane
+    // by locating the LARGEST internal canvas (the main pane, not the
+    // price scale or time axis canvases).
+    const chartDiv = document.getElementById("price-chart");
+    const allCanvases = chartDiv.querySelectorAll("canvas");
+    let lwcCanvas = null, maxArea = 0;
+    for (const c of allCanvases) {
+      if (c.id === "trade-overlay-canvas") continue;
+      const area = c.clientWidth * c.clientHeight;
+      if (area > maxArea) { maxArea = area; lwcCanvas = c; }
+    }
     let offsetX = 0, offsetY = 0;
     if (lwcCanvas) {
-      const chartRect = chartEl.getBoundingClientRect();
+      const chartRect = chartDiv.getBoundingClientRect();
       const paneRect = lwcCanvas.getBoundingClientRect();
       offsetX = paneRect.left - chartRect.left;
       offsetY = paneRect.top - chartRect.top;
