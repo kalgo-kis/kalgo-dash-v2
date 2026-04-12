@@ -633,88 +633,114 @@ function showTraceOverlay(a) {
   state._tracedAccountNum = a.num;
 
   // =====================================================================
-  // LIGHTWEIGHT TRACE — uses markers on the candle series instead of
-  // hundreds of addLineSeries calls that crash the browser.
+  // PRICE-LEVEL TRACE — horizontal ticks at exact entry prices.
   //
-  // Visual encoding:
-  //   BUY entry:  green arrowUp below bar at entry price
-  //   SELL entry: red arrowDown above bar at entry price
-  //   TP close:   cyan circle above bar
-  //   Withdrawal: gold diamond above bar with $ amount
-  //   Blowup:     red cross at blowup time
+  // Uses 4 line series total (buy entries, sell entries, TP closes, WAPP),
+  // not one per entry. Each tick is a 30-min horizontal segment at the
+  // exact fill price, showing the grid structure visually.
+  //
+  // Close-time lookup: each entry's tick extends from fill time to the
+  // next basket close (TP) or blowup — showing the position's lifetime.
   // =====================================================================
 
   const entries = trace.grid_entry_events || [];
   const blowupT = toUnix(a.blowup_time);
+  const accountEnd = blowupT || (toUnix(a.deploy_time) + 86400);
   state.tracePositionLines = [];
 
-  // Build all markers for the candle series
-  const markers = [];
-  const seen = new Set(); // dedupe by time bucket
-
-  for (const e of entries) {
-    const t15 = Math.floor(e.time_unix / 900) * 900;
-    const key = `${t15}_${e.dir}_${e.price}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const isBuy = (e.dir || "").toLowerCase() === "buy";
-    markers.push({
-      time: t15,
-      position: isBuy ? "belowBar" : "aboveBar",
-      color: isBuy ? COLORS.green : COLORS.red,
-      shape: isBuy ? "arrowUp" : "arrowDown",
-      text: "",
-      size: 0,
-    });
+  // Build close-time list for position lifetime calculation
+  const closeTimes = [];
+  for (const ev of (a.basket_close_events || [])) {
+    const t = toUnix(ev.time);
+    if (t) closeTimes.push({ t, side: (ev.closed_basket || "").toLowerCase() });
   }
 
-  // TP close markers
+  function findEndTime(entryTime, dir) {
+    for (const c of closeTimes) {
+      if (c.t > entryTime && c.side === dir) return c.t;
+    }
+    return accountEnd;
+  }
+
+  // Build line data: each entry → a horizontal segment [entry_time, end_time] at entry price
+  const buyData = [];
+  const sellData = [];
+
+  for (const e of entries) {
+    const t = Math.floor(e.time_unix / 900) * 900;
+    const dir = (e.dir || "").toLowerCase();
+    const end = Math.floor(findEndTime(e.time_unix, dir) / 900) * 900;
+    const arr = dir === "buy" ? buyData : sellData;
+    // Each segment: start point, end point, then a NaN gap
+    arr.push({ time: t, value: e.price });
+    arr.push({ time: Math.max(t + 900, end), value: e.price });
+    arr.push({ time: Math.max(t + 900, end) + 1, value: NaN }); // gap
+  }
+
+  // Sort by time (required)
+  buyData.sort((a, b) => a.time - b.time);
+  sellData.sort((a, b) => a.time - b.time);
+
+  // Deduplicate timestamps (LightweightCharts requires strictly increasing times)
+  function dedupTime(arr) {
+    const out = [];
+    let lastT = -1;
+    for (const p of arr) {
+      if (p.time <= lastT) p.time = lastT + 1;
+      out.push(p);
+      lastT = p.time;
+    }
+    return out;
+  }
+
+  if (buyData.length > 0) {
+    const s = state.priceChart.addLineSeries({
+      color: COLORS.green, lineWidth: 2, lineStyle: 0,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    s.setData(dedupTime(buyData));
+    state.tracePositionLines.push(s);
+  }
+
+  if (sellData.length > 0) {
+    const s = state.priceChart.addLineSeries({
+      color: COLORS.red, lineWidth: 2, lineStyle: 0,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+    s.setData(dedupTime(sellData));
+    state.tracePositionLines.push(s);
+  }
+
+  // TP close + withdrawal + blowup as markers (these are events, not positions)
+  const markers = [];
+
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
     if (!t) continue;
     const t15 = Math.floor(t / 900) * 900;
-    const reason = (ev.close_type || "").toUpperCase();
     markers.push({
-      time: t15,
-      position: "aboveBar",
-      color: COLORS.cyan,
-      shape: "circle",
-      text: reason === "TP" ? "" : reason.slice(0, 3),
-      size: 0,
+      time: t15, position: "aboveBar", color: COLORS.cyan,
+      shape: "circle", text: "", size: 0,
     });
   }
 
-  // Withdrawal markers
   for (const ev of (trace.withdrawal_events || [])) {
     const t15 = Math.floor(ev.time_unix / 900) * 900;
     markers.push({
-      time: t15,
-      position: "aboveBar",
-      color: COLORS.gold,
-      shape: "square",
-      text: `$${Math.round(ev.amount)}`,
-      size: 0,
+      time: t15, position: "aboveBar", color: COLORS.gold,
+      shape: "square", text: `$${Math.round(ev.amount)}`, size: 0,
     });
   }
 
-  // Blowup marker
   if (a.blowup && blowupT) {
     const t15 = Math.floor(blowupT / 900) * 900;
     markers.push({
-      time: t15,
-      position: "aboveBar",
-      color: COLORS.red,
-      shape: "square",
-      text: "BLOWUP",
-      size: 1,
+      time: t15, position: "aboveBar", color: COLORS.red,
+      shape: "square", text: "BLOWUP", size: 1,
     });
   }
 
-  // Sort markers by time (required by LightweightCharts)
   markers.sort((a, b) => a.time - b.time);
-
-  // Store in traceEntryMarkers so applyMarkersForVisibleRange merges them
-  // with the LOD account markers on every zoom/scroll.
   state.traceEntryMarkers = markers;
   applyMarkersForVisibleRange();
 
