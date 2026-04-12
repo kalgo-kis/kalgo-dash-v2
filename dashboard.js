@@ -659,11 +659,11 @@ function showTraceOverlay(a) {
   // Renders all ticks as 8x2px rectangles at exact prices using
   // LightweightCharts coordinate API. Canvas redraws every frame
   // so it tracks zoom/scroll perfectly with zero lag.
-  // Find the chart's internal pane element — the actual plot area.
-  // LightweightCharts v4 creates: div > table > tr > td (pane).
-  // timeToCoordinate/priceToCoordinate return coords relative to pane.
+  // Position canvas over the chart pane by finding the internal canvas
+  // that LightweightCharts creates and matching its position exactly.
   const chartEl = document.getElementById("price-chart");
-  const pane = chartEl.querySelector("td:first-child") || chartEl;
+  const lwcCanvas = chartEl.querySelector("canvas");
+  const pane = lwcCanvas ? lwcCanvas.parentElement : chartEl;
 
   let canvas = document.getElementById("trade-overlay-canvas");
   if (canvas) canvas.remove();
