@@ -648,72 +648,50 @@ function showTraceOverlay(a) {
   const accountEnd = blowupT || (toUnix(a.deploy_time) + 86400);
   state.tracePositionLines = [];
 
-  // Build line data: each entry → a 2-bar horizontal tick at exact price
-  const buyData = [];
-  const sellData = [];
+  // Individual 2-point line series per entry — each is a tiny tick at the
+  // exact fill price. With ~500 entries this creates ~500 series, but each
+  // series has only 2 data points so it's lightweight. The old dashboard
+  // did exactly this and it worked fine.
+  //
+  // TP closes get the same treatment but in cyan.
+  // Withdrawals: text-only marker (no shape).
+  // Blowup: red text marker.
 
   for (const e of entries) {
-    const t = Math.floor(e.time_unix / 900) * 900;
-    const dir = (e.dir || "").toLowerCase();
-    const arr = dir === "buy" ? buyData : sellData;
-    // 2-bar tick + NaN gap
-    arr.push({ time: t, value: e.price });
-    arr.push({ time: t + 900, value: e.price });
-    arr.push({ time: t + 901, value: NaN });
-  }
-
-  // Sort by time (required)
-  buyData.sort((a, b) => a.time - b.time);
-  sellData.sort((a, b) => a.time - b.time);
-
-  // Deduplicate timestamps (LightweightCharts requires strictly increasing times)
-  function dedupTime(arr) {
-    const out = [];
-    let lastT = -1;
-    for (const p of arr) {
-      if (p.time <= lastT) p.time = lastT + 1;
-      out.push(p);
-      lastT = p.time;
-    }
-    return out;
-  }
-
-  if (buyData.length > 0) {
+    const t15 = Math.floor(e.time_unix / 900) * 900;
+    const isBuy = (e.dir || "").toLowerCase() === "buy";
     const s = state.priceChart.addLineSeries({
-      color: COLORS.green, lineWidth: 2, lineStyle: 0,
+      color: isBuy ? COLORS.green : COLORS.red,
+      lineWidth: 2, lineStyle: 0,
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
     });
-    s.setData(dedupTime(buyData));
+    s.setData([{ time: t15, value: e.price }, { time: t15 + 900, value: e.price }]);
     state.tracePositionLines.push(s);
   }
 
-  if (sellData.length > 0) {
-    const s = state.priceChart.addLineSeries({
-      color: COLORS.red, lineWidth: 2, lineStyle: 0,
-      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-    });
-    s.setData(dedupTime(sellData));
-    state.tracePositionLines.push(s);
-  }
-
-  // TP close + withdrawal + blowup as markers (these are events, not positions)
-  const markers = [];
-
+  // TP close ticks — same style, cyan, at close price
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
     if (!t) continue;
     const t15 = Math.floor(t / 900) * 900;
-    markers.push({
-      time: t15, position: "aboveBar", color: COLORS.cyan,
-      shape: "circle", text: "", size: 0,
+    const cp = ev.close_price || 0;
+    if (!cp) continue;
+    const s = state.priceChart.addLineSeries({
+      color: COLORS.cyan, lineWidth: 2, lineStyle: 0,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
     });
+    s.setData([{ time: t15, value: cp }, { time: t15 + 900, value: cp }]);
+    state.tracePositionLines.push(s);
   }
+
+  // Withdrawal + blowup as text-only markers on candle series
+  const markers = [];
 
   for (const ev of (trace.withdrawal_events || [])) {
     const t15 = Math.floor(ev.time_unix / 900) * 900;
     markers.push({
       time: t15, position: "aboveBar", color: COLORS.gold,
-      shape: "circle", text: `$${Math.round(ev.amount)}`, size: 0,
+      shape: "arrowDown", text: `$${Math.round(ev.amount)}`, size: 0,
     });
   }
 
