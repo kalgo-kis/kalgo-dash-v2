@@ -613,11 +613,6 @@ function clearTraceOverlay() {
     try { state.priceChart.removeSeries(s); } catch (e) {}
   }
   state.tracePositionLines = [];
-  if (state._traceTickHandler && state.priceChart) {
-    state.priceChart.timeScale().unsubscribeVisibleTimeRangeChange(state._traceTickHandler);
-    state._traceTickHandler = null;
-  }
-  state._allTraceTicks = null;
   state.traceActive = false;
   state.traceEntryMarkers = null;
   state._tracedAccountNum = null;
@@ -635,8 +630,7 @@ function showTraceOverlay(a) {
   const blowupT = toUnix(a.blowup_time);
   state.tracePositionLines = [];
 
-  // All ticks (entries + closes) stored for lazy rendering.
-  // Only ticks in the visible time range get line series (max ~100 at once).
+  // Collect all ticks: entries + TP closes
   const allTicks = [];
   for (const e of entries) {
     const t15 = Math.floor(e.time_unix / 900) * 900;
@@ -652,50 +646,28 @@ function showTraceOverlay(a) {
     allTicks.push({ t: t15, v: cp, color: side === "buy" ? COLORS.blue : COLORS.purple });
   }
   allTicks.sort((a, b) => a.t - b.t);
-  state._allTraceTicks = allTicks;
 
-  function renderVisibleTicks() {
-    // Remove old tick series
-    for (const s of (state.tracePositionLines || [])) {
-      try { state.priceChart.removeSeries(s); } catch (e) {}
-    }
-    state.tracePositionLines = [];
-
-    const range = state.priceChart.timeScale().getVisibleRange();
-    if (!range) return;
-
-    // Find ticks in visible range (binary search-ish via filter)
-    const visible = allTicks.filter(tk => tk.t >= range.from && tk.t <= range.to);
-
-    // Cap to prevent crash — if zoomed way out, show evenly sampled subset
-    const MAX = 120;
-    let toRender = visible;
-    if (visible.length > MAX) {
-      const step = Math.ceil(visible.length / MAX);
-      toRender = visible.filter((_, i) => i % step === 0);
-    }
-
-    for (const tk of toRender) {
-      const s = state.priceChart.addLineSeries({
-        color: tk.color,
-        lineWidth: 2, lineStyle: 0,
-        priceLineVisible: false, lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      s.setData([{ time: tk.t, value: tk.v }, { time: tk.t + 900, value: tk.v }]);
-      state.tracePositionLines.push(s);
-    }
+  // One-shot render: create line series for up to 150 ticks.
+  // If more than 150, evenly sample. No scroll handler — ticks are static
+  // on the chart and survive zoom/scroll like any other series.
+  const MAX = 150;
+  let toRender = allTicks;
+  if (allTicks.length > MAX) {
+    const step = allTicks.length / MAX;
+    toRender = [];
+    for (let i = 0; i < MAX; i++) toRender.push(allTicks[Math.floor(i * step)]);
   }
 
-  renderVisibleTicks();
-
-  // Re-render on zoom/scroll with debounce to avoid lag
-  let _tickDebounce = null;
-  state._traceTickHandler = () => {
-    clearTimeout(_tickDebounce);
-    _tickDebounce = setTimeout(renderVisibleTicks, 200);
-  };
-  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(state._traceTickHandler);
+  for (const tk of toRender) {
+    const s = state.priceChart.addLineSeries({
+      color: tk.color,
+      lineWidth: 2, lineStyle: 0,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    s.setData([{ time: tk.t, value: tk.v }, { time: tk.t + 900, value: tk.v }]);
+    state.tracePositionLines.push(s);
+  }
 
   // Withdrawal + blowup as text markers
   const markers = [];
@@ -717,21 +689,14 @@ function showTraceOverlay(a) {
   state.traceEntryMarkers = markers;
   applyMarkersForVisibleRange();
 
-  // Equity + balance curves on the bank chart (only 2 series)
+  // Equity + balance curves on the bank chart
   const eqSnaps = trace.equity_snapshots || [];
   if (eqSnaps.length > 0) {
     state.traceEquitySeries = state.bankChart.addLineSeries({
-      color: "#f0883e",
-      lineWidth: 2,
-      lineType: 0,
-      title: `Equity #${a.num}`,
+      color: "#f0883e", lineWidth: 2, lineType: 0, title: `Equity #${a.num}`,
     });
     state.traceBalanceSeries = state.bankChart.addLineSeries({
-      color: "#58a6ff",
-      lineWidth: 1,
-      lineType: 1,
-      lineStyle: 2,
-      title: `Balance #${a.num}`,
+      color: "#58a6ff", lineWidth: 1, lineType: 1, lineStyle: 2, title: `Balance #${a.num}`,
     });
     const dedup = (arr, key) => {
       const out = [];
