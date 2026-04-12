@@ -638,20 +638,39 @@ function showTraceOverlay(a) {
   const blowupT = toUnix(a.blowup_time);
   state.tracePositionLines = [];
 
-  // Collect all ticks: entries + TP closes
+  // Build candle time lookup: timeToCoordinate only works for times
+  // that exist in the candle data. Map each tick to the nearest candle time.
+  const b = state.currentBundle;
+  const candleTimes = (b && b.candles_m15) ? b.candles_m15.map(c => c.t) : [];
+
+  function nearestCandleTime(unix) {
+    if (!candleTimes.length) return unix;
+    // Binary search for closest candle time
+    let lo = 0, hi = candleTimes.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (candleTimes[mid] < unix) lo = mid + 1;
+      else hi = mid;
+    }
+    // Check lo and lo-1 for closest
+    if (lo > 0 && Math.abs(candleTimes[lo - 1] - unix) < Math.abs(candleTimes[lo] - unix)) {
+      return candleTimes[lo - 1];
+    }
+    return candleTimes[lo];
+  }
+
+  // Collect all ticks: entries + TP closes, mapped to nearest candle time
   const allTicks = [];
   for (const e of entries) {
-    const t15 = Math.floor(e.time_unix / 900) * 900;
     const isBuy = (e.dir || "").toLowerCase() === "buy";
-    allTicks.push({ t: t15, v: e.price, color: isBuy ? COLORS.green : COLORS.red });
+    allTicks.push({ t: nearestCandleTime(e.time_unix), v: e.price, color: isBuy ? COLORS.green : COLORS.red });
   }
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
     const cp = ev.close_price || 0;
     if (!t || !cp) continue;
-    const t15 = Math.floor(t / 900) * 900;
     const side = (ev.closed_basket || "").toLowerCase();
-    allTicks.push({ t: t15, v: cp, color: side === "buy" ? COLORS.blue : COLORS.purple });
+    allTicks.push({ t: nearestCandleTime(t), v: cp, color: side === "buy" ? COLORS.blue : COLORS.purple });
   }
   allTicks.sort((a, b) => a.t - b.t);
 
