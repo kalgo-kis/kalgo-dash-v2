@@ -694,16 +694,32 @@ function showTraceOverlay(a) {
 
     const ts = state.priceChart.timeScale();
 
-    // No offset — coordinates from timeToCoordinate/priceToCoordinate
-    // appear to be relative to the chart container directly.
+    // Find pane offset: LWC coordinates are relative to the chart pane.
+    // Our canvas covers the full #price-chart div (including price scales).
+    const chartDiv = document.getElementById("price-chart");
+    const allCanvases = chartDiv.querySelectorAll("canvas");
+    let lwcCanvas = null, maxArea = 0;
+    for (const c of allCanvases) {
+      if (c.id === "trade-overlay-canvas") continue;
+      const area = c.clientWidth * c.clientHeight;
+      if (area > maxArea) { maxArea = area; lwcCanvas = c; }
+    }
+    let offsetX = 0, offsetY = 0;
+    if (lwcCanvas) {
+      const chartRect = chartDiv.getBoundingClientRect();
+      const paneRect = lwcCanvas.getBoundingClientRect();
+      offsetX = paneRect.left - chartRect.left;
+      offsetY = paneRect.top - chartRect.top;
+    }
+
     for (const tk of allTicks) {
       const x = ts.timeToCoordinate(tk.t);
       if (x === null) continue;
       const y = state.candleSeries.priceToCoordinate(tk.v);
       if (y === null) continue;
-      if (x < 0 || x > w || y < 0 || y > h) continue;
+      // Draw at offset position — no bounds filtering
       ctx.fillStyle = tk.color;
-      ctx.fillRect(x - 4, y - 1, 8, 2);
+      ctx.fillRect(x + offsetX - 4, y + offsetY - 1, 8, 2);
     }
 
     state._traceAnimFrame = requestAnimationFrame(drawFrame);
