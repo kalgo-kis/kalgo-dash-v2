@@ -1,7 +1,19 @@
 {
-  "count": 7,
-  "bundled_count": 7,
+  "count": 8,
+  "bundled_count": 8,
   "experiments": [
+    {
+      "experiment_id": "v3_gp10_tp10_limitfix",
+      "fold": "fold4",
+      "eval_start": "2020-01-01",
+      "eval_end": "2021-12-31",
+      "total_return": 1.23291522844806,
+      "total_accounts": 13,
+      "blowup_count": 12,
+      "bank_end": 6164.5761422403,
+      "timestamp": null,
+      "bundled": true
+    },
     {
       "experiment_id": "v3_gp10_tp10_extract_fixed",
       "fold": "fold4",
