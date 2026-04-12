@@ -659,18 +659,19 @@ function showTraceOverlay(a) {
   // Renders all ticks as 8x2px rectangles at exact prices using
   // LightweightCharts coordinate API. Canvas redraws every frame
   // so it tracks zoom/scroll perfectly with zero lag.
+  // Find the chart's internal pane element — the actual plot area.
+  // LightweightCharts v4 creates: div > table > tr > td (pane).
+  // timeToCoordinate/priceToCoordinate return coords relative to pane.
   const chartEl = document.getElementById("price-chart");
-  // LightweightCharts creates a nested structure — the actual chart
-  // container is the first child div with position:relative
-  const chartContainer = chartEl.querySelector("table") || chartEl;
+  const pane = chartEl.querySelector("td:first-child") || chartEl;
 
   let canvas = document.getElementById("trade-overlay-canvas");
   if (canvas) canvas.remove();
   canvas = document.createElement("canvas");
   canvas.id = "trade-overlay-canvas";
   canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;";
-  chartContainer.style.position = "relative";
-  chartContainer.appendChild(canvas);
+  pane.style.position = "relative";
+  pane.appendChild(canvas);
 
   state._traceCanvas = canvas;
   state._traceAnimFrame = null;
@@ -684,20 +685,23 @@ function showTraceOverlay(a) {
     const w = parent.clientWidth;
     const h = parent.clientHeight;
     const dpr = window.devicePixelRatio || 1;
-    cvs.width = w * dpr;
-    cvs.height = h * dpr;
+
+    // Only resize canvas when dimensions change (avoids flicker)
+    if (cvs.width !== w * dpr || cvs.height !== h * dpr) {
+      cvs.width = w * dpr;
+      cvs.height = h * dpr;
+    }
 
     const ctx = cvs.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
     const ts = state.priceChart.timeScale();
-    const series = state.candleSeries;
 
     for (const tk of allTicks) {
       const x = ts.timeToCoordinate(tk.t);
       if (x === null || x < 0 || x > w) continue;
-      const y = series.priceToCoordinate(tk.v);
+      const y = state.candleSeries.priceToCoordinate(tk.v);
       if (y === null || y < 0 || y > h) continue;
       ctx.fillStyle = tk.color;
       ctx.fillRect(x - 4, y - 1, 8, 2);
