@@ -647,18 +647,10 @@ function showTraceOverlay(a) {
   }
   allTicks.sort((a, b) => a.t - b.t);
 
-  // One-shot render: create line series for up to 150 ticks.
-  // If more than 150, evenly sample. No scroll handler — ticks are static
-  // on the chart and survive zoom/scroll like any other series.
-  const MAX = 150;
-  let toRender = allTicks;
-  if (allTicks.length > MAX) {
-    const step = allTicks.length / MAX;
-    toRender = [];
-    for (let i = 0; i < MAX; i++) toRender.push(allTicks[Math.floor(i * step)]);
-  }
-
-  for (const tk of toRender) {
+  // One-shot render: create one line series per tick. No cap, no sampling.
+  // Every trade must be visible for visual debugging. No scroll handler —
+  // ticks are static and survive zoom/scroll natively.
+  for (const tk of allTicks) {
     const s = state.priceChart.addLineSeries({
       color: tk.color,
       lineWidth: 2, lineStyle: 0,
