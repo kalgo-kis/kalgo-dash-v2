@@ -778,6 +778,19 @@ function showTraceOverlay(a) {
       }
     }
   }
+
+  // Entries still pending after all closes = the basket(s) that caused the blowup.
+  // Draw dashed lines from these entries to the blowup time in orange.
+  if (a.blowup && blowupT) {
+    const blowupCandleT = nearestCandleTime(blowupT);
+    for (const entry of pendingBuy) {
+      basketLines.push({ fromT: entry.t, fromV: entry.v, toT: blowupCandleT, toV: entry.v, color: "rgba(219,109,40,0.5)" });
+    }
+    for (const entry of pendingSell) {
+      basketLines.push({ fromT: entry.t, fromV: entry.v, toT: blowupCandleT, toV: entry.v, color: "rgba(219,109,40,0.5)" });
+    }
+  }
+
   allTicks.sort((a, b) => a.t - b.t);
 
   // Canvas overlay drawn via requestAnimationFrame.
