@@ -22,6 +22,7 @@ const state = {
   markerIndex: {},     // time -> [marker] for hover lookup
   accountsById: {},    // account_num -> account
   fullPriceRange: null, // [from, to] seconds
+  hwmSeries: null,     // high-water mark line on pool chart
 };
 
 // ----- helpers -----
@@ -132,12 +133,12 @@ function renderSummaryOnly(entry) {
   state.currentBundle = null;
   document.getElementById("hdr-experiment-id").textContent = entry.experiment_id;
   document.getElementById("hdr-fold-period").textContent = `${entry.fold} · ${entry.eval_start}..${entry.eval_end}`;
-  document.getElementById("hdr-extraction").textContent = "—";
-  document.getElementById("hdr-extraction-sub").textContent = "";
-  document.getElementById("hdr-pool").textContent = "—";
-  document.getElementById("hdr-profitable").textContent = "—";
-  document.getElementById("hdr-lifetime").textContent = "—";
-  document.getElementById("hdr-perday").textContent = "—";
+  document.getElementById("hdr-poolreturn").textContent = "—";
+  document.getElementById("hdr-poolreturn-sub").textContent = "";
+  document.getElementById("hdr-expectancy").textContent = "—";
+  document.getElementById("hdr-profitfactor").textContent = "—";
+  document.getElementById("hdr-extractionratio").textContent = "—";
+  document.getElementById("hdr-winrate").textContent = "—";
   document.getElementById("hdr-costs").textContent = "—";
   document.getElementById("data-warning-card").style.display = "";
   document.getElementById("data-warning-text").textContent =
@@ -161,43 +162,48 @@ function renderBundle(b) {
   const startingCap = b.starting_capital || m.bank_start || 5000;
   const poolEnd = m.bank_end ?? m.total_end ?? 0;
   const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
+  const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
 
-  // Fleet P&L: pool_end - pool_start. The only honest number.
-  const fleetPnl = poolEnd - startingCap;
-  const poolReturn = poolEnd / startingCap;
-  const pnlEl = document.getElementById("hdr-pnl");
-  pnlEl.textContent = `${fleetPnl >= 0 ? "+" : ""}${fmtMoney(fleetPnl)}`;
-  pnlEl.className = "metric-value " + (fleetPnl >= 0 ? "green" : "red");
-  document.getElementById("hdr-pnl-sub").textContent = `${fmtNum(poolReturn, 3)}x  (${fmtMoney(startingCap)} → ${fmtMoney(poolEnd)})`;
+  // Pool Return: pool_end / pool_start as X.XXx
+  const poolReturn = startingCap > 0 ? poolEnd / startingCap : 0;
+  const prEl = document.getElementById("hdr-poolreturn");
+  prEl.textContent = fmtNum(poolReturn, 2) + "x";
+  prEl.className = "metric-value " + (poolReturn >= 1.0 ? "green" : "red");
+  document.getElementById("hdr-poolreturn-sub").textContent = `${fmtMoney(startingCap)} \u2192 ${fmtMoney(poolEnd)}`;
 
-  // Profitable: count(net>=0) / total
+  // Win/loss stats
   const winners = accounts.filter(a => (a.net || 0) >= 0);
   const losers = accounts.filter(a => (a.net || 0) < 0);
-  document.getElementById("hdr-profitable").textContent = `${winners.length}/${accounts.length}`;
-  document.getElementById("hdr-profitable-sub").textContent = `${losers.length} blowup losses`;
-
-  // Avg Win: mean(net) for accounts where net >= 0
+  const winRate = accounts.length > 0 ? winners.length / accounts.length : 0;
   const avgWin = winners.length ? winners.reduce((s, a) => s + (a.net || 0), 0) / winners.length : 0;
-  document.getElementById("hdr-avgwin").textContent = `+${fmtMoney(avgWin)}`;
-
-  // Avg Blowup Cost: mean(|net|) for accounts where net < 0
   const avgLoss = losers.length ? losers.reduce((s, a) => s + Math.abs(a.net || 0), 0) / losers.length : 0;
-  document.getElementById("hdr-avgloss").textContent = `-${fmtMoney(avgLoss)}`;
+  const lossRate = accounts.length > 0 ? losers.length / accounts.length : 0;
 
-  // Avg Lifetime
-  const lifetimes = accounts.map(a => a.lifetime_days).filter(v => v != null && !isNaN(v));
-  const avgLife = lifetimes.length ? lifetimes.reduce((s, v) => s + v, 0) / lifetimes.length : 0;
-  document.getElementById("hdr-lifetime").textContent = fmtNum(avgLife, 1) + "d";
+  // Expectancy: (winRate * avgWin) - (lossRate * avgLoss)
+  const expectancy = (winRate * avgWin) - (lossRate * avgLoss);
+  const expEl = document.getElementById("hdr-expectancy");
+  expEl.textContent = `${expectancy >= 0 ? "+" : ""}${fmtMoney(expectancy)}`;
+  expEl.className = "metric-value " + (expectancy > 0 ? "green" : "red");
 
-  // Avg $/Day: mean(withdrawn/lifetime_days) for accounts with lifetime > 0
-  const perDays = accounts.map(a => {
-    if (!a.lifetime_days || a.lifetime_days <= 0) return null;
-    return (a.withdrawn || 0) / a.lifetime_days;
-  }).filter(v => v != null);
-  const avgPerDay = perDays.length ? perDays.reduce((s, v) => s + v, 0) / perDays.length : 0;
-  document.getElementById("hdr-perday").textContent = fmtMoney(avgPerDay);
+  // Profit Factor: sum(positive_nets) / sum(abs(negative_nets))
+  const sumPosNets = winners.reduce((s, a) => s + (a.net || 0), 0);
+  const sumNegNets = losers.reduce((s, a) => s + Math.abs(a.net || 0), 0);
+  const profitFactor = sumNegNets > 0 ? sumPosNets / sumNegNets : (sumPosNets > 0 ? Infinity : 0);
+  const pfEl = document.getElementById("hdr-profitfactor");
+  pfEl.textContent = profitFactor === Infinity ? "\u221E" : fmtNum(profitFactor, 2);
+  pfEl.className = "metric-value " + (profitFactor > 1.0 ? "green" : "red");
 
-  // Costs %: (commission+swap) / withdrawn * 100
+  // Extraction Ratio: mean(withdrawn_i / stake_i)
+  const xrs = accounts.filter(a => (a.stake || 0) > 0).map(a => (a.withdrawn || 0) / a.stake);
+  const meanXR = xrs.length ? xrs.reduce((s, v) => s + v, 0) / xrs.length : 0;
+  const xrEl = document.getElementById("hdr-extractionratio");
+  xrEl.textContent = fmtNum(meanXR, 2) + "x";
+  xrEl.className = "metric-value " + (meanXR > 1.0 ? "green" : "red");
+
+  // Win Rate: N/M (XX%)
+  document.getElementById("hdr-winrate").textContent = `${winners.length}/${accounts.length} (${fmtNum(winRate * 100, 0)}%)`;
+
+  // Costs %: (|commission| + |swap|) / withdrawn * 100
   const totalComm = m.total_commission || 0;
   const totalSwap = m.total_swap || 0;
   const costsPct = totalWithdrawn > 0 ? (Math.abs(totalComm) + Math.abs(totalSwap)) / totalWithdrawn * 100 : 0;
@@ -223,45 +229,31 @@ state._tableSortAsc = true;
 
 function renderAccountsTable(accounts) {
   const cols = [
-    { key: "num",        label: "#",           fmt: v => v },
-    { key: "outcome",    label: "Outcome",     fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
-    { key: "poolBefore", label: "Pool Before",  fmt: fmtMoney },
-    { key: "stake",      label: "Deployed",     fmt: v => `-${fmtMoney(v)}` },
-    { key: "withdrawn",  label: "Extracted",    fmt: v => `+${fmtMoney(v)}` },
-    { key: "poolAfter",  label: "Pool After",   fmt: v => fmtMoney(v) },
-    { key: "net",        label: "Net",          fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>` },
-    { key: "lifetime_days", label: "Life",      fmt: v => fmtNum(v, 1) + "d" },
-    { key: "perday",     label: "$/Day",        fmt: v => fmtMoney(v) },
+    { key: "num",       label: "#",              fmt: v => v },
+    { key: "outcome",   label: "Outcome",        fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
+    { key: "stake",     label: "Stake",          fmt: fmtMoney },
+    { key: "withdrawn", label: "Extracted",      fmt: fmtMoney },
+    { key: "net",       label: "Net P&L",        fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>` },
+    { key: "xr",        label: "X Ratio",        fmt: v => `<span style="color:var(--${v >= 1.0 ? "green" : "red"})">${fmtNum(v, 2)}x</span>` },
+    { key: "lifetime_days", label: "Life",       fmt: v => fmtNum(v, 1) + "d" },
+    { key: "netperday", label: "Net $/Day",      fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${fmtMoney(v)}</span>` },
   ];
 
-  // Compute pool flow: simulate the pool balance through each account
-  const startingCap = state.currentBundle?.starting_capital || 5000;
-  let pool = startingCap;
-  const rows = accounts.map(a => {
-    const poolBefore = pool;
-    pool -= (a.stake || 0);       // deploy
-    pool += (a.withdrawn || 0);   // withdrawals returned to pool
-    // blowup: residual ~$0. EOT: residual returned but not in 'net'
-    const poolAfter = pool;
-    return {
-      ...a,
-      poolBefore: Math.round(poolBefore * 100) / 100,
-      poolAfter: Math.round(poolAfter * 100) / 100,
-      perday: (a.lifetime_days && a.lifetime_days > 0) ? (a.withdrawn || 0) / a.lifetime_days : 0,
-    };
-  });
+  // Compute derived fields per account
+  const rows = accounts.map(a => ({
+    ...a,
+    xr: (a.stake || 0) > 0 ? (a.withdrawn || 0) / a.stake : 0,
+    netperday: (a.lifetime_days && a.lifetime_days > 0) ? (a.net || 0) / a.lifetime_days : 0,
+  }));
 
-  // Sort (but preserve pool flow order for poolBefore/poolAfter — only sort by non-flow columns)
+  // Sort
   const sortKey = state._tableSortCol;
   const asc = state._tableSortAsc;
-  const flowCols = ["poolBefore", "poolAfter"];
-  if (!flowCols.includes(sortKey)) {
-    rows.sort((a, b) => {
-      let va = a[sortKey], vb = b[sortKey];
-      if (typeof va === "string") return asc ? (va||"").localeCompare(vb||"") : (vb||"").localeCompare(va||"");
-      return asc ? (va||0) - (vb||0) : (vb||0) - (va||0);
-    });
-  }
+  rows.sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (typeof va === "string") return asc ? (va||"").localeCompare(vb||"") : (vb||"").localeCompare(va||"");
+    return asc ? (va||0) - (vb||0) : (vb||0) - (va||0);
+  });
 
   const table = document.getElementById("accounts-table");
   const thead = table.querySelector("thead tr");
@@ -270,7 +262,7 @@ function renderAccountsTable(accounts) {
   // Header
   thead.innerHTML = cols.map(c => {
     const isSorted = state._tableSortCol === c.key;
-    const arrow = isSorted ? (state._tableSortAsc ? " ▲" : " ▼") : "";
+    const arrow = isSorted ? (state._tableSortAsc ? " \u25B2" : " \u25BC") : "";
     return `<th data-col="${c.key}" class="${isSorted ? "sorted" : ""}">${c.label}<span class="sort-arrow">${arrow}</span></th>`;
   }).join("");
 
@@ -283,21 +275,21 @@ function renderAccountsTable(accounts) {
   // Totals row
   const totalNet = accounts.reduce((s, a) => s + (a.net || 0), 0);
   const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
-  const totalDeployed = accounts.reduce((s, a) => s + (a.stake || 0), 0);
-  const avgLife = accounts.length ? accounts.reduce((s, a) => s + (a.lifetime_days || 0), 0) / accounts.length : 0;
-  const avgPerDay = accounts.length ? rows.reduce((s, r) => s + r.perday, 0) / rows.length : 0;
+  const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
+  const fleetXR = totalStake > 0 ? totalWithdrawn / totalStake : 0;
+  const totalDays = accounts.reduce((s, a) => s + (a.lifetime_days || 0), 0);
+  const avgLife = accounts.length ? totalDays / accounts.length : 0;
+  const aggNetPerDay = totalDays > 0 ? totalNet / totalDays : 0;
   const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
-  const lastPool = rows.length ? rows[rows.length - 1].poolAfter : startingCap;
   tbody.innerHTML += `<tr class="totals-row">
     <td>FLEET</td>
     <td>${profitable}/${accounts.length} profit</td>
-    <td>${fmtMoney(startingCap)}</td>
-    <td>-${fmtMoney(totalDeployed)}</td>
-    <td>+${fmtMoney(totalWithdrawn)}</td>
-    <td>${fmtMoney(lastPool)}</td>
+    <td>${fmtMoney(totalStake)}</td>
+    <td>${fmtMoney(totalWithdrawn)}</td>
     <td><span style="color:var(--${totalNet >= 0 ? "green" : "red"})">${totalNet >= 0 ? "+" : ""}${fmtMoney(totalNet)}</span></td>
+    <td><span style="color:var(--${fleetXR >= 1.0 ? "green" : "red"})">${fmtNum(fleetXR, 2)}x</span></td>
     <td>${fmtNum(avgLife, 1)}d</td>
-    <td>${fmtMoney(avgPerDay)}</td>
+    <td><span style="color:var(--${aggNetPerDay >= 0 ? "green" : "red"})">${fmtMoney(aggNetPerDay)}</span></td>
   </tr>`;
 
   // Click handlers — sort
@@ -336,6 +328,7 @@ function clearCharts() {
   pc.innerHTML = ""; bc.innerHTML = "";
   state.priceChart = null; state.bankChart = null;
   state.candleSeries = null; state.bankSeries = null;
+  state.hwmSeries = null;
   state.markerIndex = {};
   state.fullPriceRange = null;
 }
@@ -393,6 +386,11 @@ function setupCharts() {
   state.capitalLine = state.bankChart.addLineSeries({
     color: COLORS.gray, lineWidth: 1, lineStyle: 2, // dashed
     title: "Starting capital",
+  });
+  state.hwmSeries = state.bankChart.addLineSeries({
+    color: COLORS.gray, lineWidth: 1, lineStyle: 1, // dotted
+    title: "High-Water Mark",
+    crosshairMarkerVisible: false,
   });
   // Keep savingsSeries as null — trace overlay adds equity/balance as needed.
   // The marker LOD code references savingsSeries for bank markers, so point it
@@ -630,22 +628,41 @@ function populateBankChart(b) {
   const poolData = prep(b.bank_curve, "bank");
   state.bankSeries.setData(poolData);
 
-  // Account-number markers on the pool curve
+  // High-water mark line: running max of pool_curve values
+  if (state.hwmSeries && poolData.length > 0) {
+    let runMax = -Infinity;
+    const hwmData = poolData.map(p => {
+      runMax = Math.max(runMax, p.value);
+      return { time: p.time, value: runMax };
+    });
+    state.hwmSeries.setData(hwmData);
+  }
+
+  // Event markers on the pool curve: green at deploy, red at blowup
   const bankMarkers = [];
   for (const a of b.accounts) {
-    const t = toUnix(a.blowup_time) || toUnix(a.deploy_time);
-    if (t == null) continue;
-    const color = (a.outcome === "survived" || a.outcome === "blowup_profit") ? COLORS.green
-                : a.outcome === "total_loss" ? COLORS.gray
-                : COLORS.red;
-    bankMarkers.push({
-      time: t,
-      position: "aboveBar",
-      color,
-      shape: "circle",
-      text: `#${a.num}`,
-      _kind: "account",
-    });
+    const deployT = toUnix(a.deploy_time);
+    if (deployT != null) {
+      bankMarkers.push({
+        time: deployT,
+        position: "belowBar",
+        color: COLORS.green,
+        shape: "arrowUp",
+        text: `#${a.num}`,
+        _kind: "deploy",
+      });
+    }
+    const blowupT = toUnix(a.blowup_time);
+    if (blowupT != null && a.blowup) {
+      bankMarkers.push({
+        time: blowupT,
+        position: "aboveBar",
+        color: COLORS.red,
+        shape: "arrowDown",
+        text: `\u00D7${a.num}`,
+        _kind: "blowup",
+      });
+    }
   }
   bankMarkers.sort((x, y) => x.time - y.time);
   state.fullBankMarkers = bankMarkers;
@@ -944,6 +961,79 @@ function showTraceOverlay(a) {
   }
 }
 
+// ----- basket metrics helper -----
+function computeBasketMetrics(a) {
+  const entries = (a.trace && a.trace.grid_entry_events) || [];
+  const closes = (a.basket_close_events) || [];
+  if (!entries.length && !closes.length) return null;
+
+  // Merge all events chronologically
+  const allEvents = [];
+  for (const e of entries) {
+    allEvents.push({ type: "entry", time: e.time_unix || toUnix(e.time), data: e });
+  }
+  for (const c of closes) {
+    allEvents.push({ type: "close", time: toUnix(c.time), data: c });
+  }
+  allEvents.sort((a, b) => (a.time || 0) - (b.time || 0));
+
+  let tpCount = 0;
+  let buyTPs = 0;
+  let sellTPs = 0;
+  const depths = [];    // entries per basket cycle
+  const timesToTP = []; // hours from earliest entry to close
+  const maxDDs = [];    // max displacement per cycle in pips
+
+  // Track pending baskets per side
+  let pendingBuy = [];  // entry prices + times
+  let pendingSell = [];
+
+  for (const ev of allEvents) {
+    if (ev.type === "entry") {
+      const e = ev.data;
+      const isBuy = (e.dir || "").toLowerCase() === "buy";
+      const entry = { price: e.price, time: ev.time };
+      (isBuy ? pendingBuy : pendingSell).push(entry);
+    } else {
+      const c = ev.data;
+      const side = (c.closed_basket || "").toLowerCase();
+      const closeType = (c.close_type || "").toUpperCase();
+      if (closeType === "TP") {
+        tpCount++;
+        if (side === "buy") buyTPs++;
+        else sellTPs++;
+      }
+      const pending = side === "buy" ? pendingBuy : pendingSell;
+      if (pending.length > 0) {
+        depths.push(pending.length);
+        // Time to close from earliest entry
+        const earliest = Math.min(...pending.map(p => p.time).filter(t => t));
+        if (earliest && ev.time) {
+          timesToTP.push((ev.time - earliest) / 3600); // hours
+        }
+        // Max DD: max |entry_price - close_price| in pips
+        const cp = c.close_price || 0;
+        if (cp > 0) {
+          const maxDisp = Math.max(...pending.map(p => Math.abs(p.price - cp)));
+          maxDDs.push(maxDisp * 10000); // convert to pips (4-digit pairs like EURGBP)
+        }
+        // Clear basket for this side
+        if (side === "buy") pendingBuy = [];
+        else pendingSell = [];
+      }
+    }
+  }
+
+  return {
+    tpCount,
+    avgDepth: depths.length ? depths.reduce((s, v) => s + v, 0) / depths.length : 0,
+    avgTimeToTP: timesToTP.length ? timesToTP.reduce((s, v) => s + v, 0) / timesToTP.length : 0,
+    maxBasketDD: maxDDs.length ? Math.max(...maxDDs) : 0,
+    buyTPs,
+    sellTPs,
+  };
+}
+
 // ----- account detail -----
 function showAccountDetail(a) {
   const deployT = toUnix(a.deploy_time);
@@ -967,6 +1057,43 @@ function showAccountDetail(a) {
   // sort timeline by time
   events.sort((a, b) => (a.t || 0) - (b.t || 0));
 
+  // Computed fields for detail panel
+  const xr = (a.stake || 0) > 0 ? (a.withdrawn || 0) / a.stake : 0;
+  const netperday = (a.lifetime_days && a.lifetime_days > 0) ? (a.net || 0) / a.lifetime_days : 0;
+
+  // Section B: Basket Metrics
+  const bm = computeBasketMetrics(a);
+  let basketHTML = "";
+  if (bm) {
+    basketHTML = `
+      <div class="basket-metrics">
+        <div class="basket-metrics-title">Basket Metrics</div>
+        <div class="basket-metrics-grid">
+          <div class="k">TP Count</div><div class="v">${bm.tpCount}</div>
+          <div class="k">Avg Depth/Basket</div><div class="v">${fmtNum(bm.avgDepth, 1)}</div>
+          <div class="k">Avg Time to TP</div><div class="v">${fmtNum(bm.avgTimeToTP, 1)}h</div>
+          <div class="k">Max Basket DD</div><div class="v">${fmtNum(bm.maxBasketDD, 1)} pips</div>
+          <div class="k">Buy/Sell TPs</div><div class="v">${bm.buyTPs} / ${bm.sellTPs}</div>
+        </div>
+      </div>`;
+  }
+
+  // Section C: Config
+  const policySource = state.currentBundle?.policy_source || "";
+  let configHTML = "";
+  if (policySource) {
+    configHTML = `
+      <div class="config-section">
+        <div class="config-section-title">Strategy Config</div>
+        <pre>${policySource}</pre>
+      </div>`;
+  }
+
+  // Section D: Notes
+  const expId = state.currentBundle?.experiment_id || "";
+  const notesKey = `kalgo_notes_${expId}`;
+  const savedNotes = localStorage.getItem(notesKey) || "";
+
   document.getElementById("close-detail-btn").style.display = "";
   document.getElementById("detail-body").innerHTML = `
     <div class="detail-header">
@@ -974,14 +1101,18 @@ function showAccountDetail(a) {
       <div class="outcome ${a.outcome}">${a.outcome.replace("_", " ")}</div>
     </div>
     <div class="detail-meta">
-      <div class="k">Deploy</div><div class="v">${fmtUnix(a.deploy_time)}</div>
-      <div class="k">End</div><div class="v">${fmtUnix(a.blowup_time)}</div>
       <div class="k">Stake</div><div class="v">${fmtMoney(a.stake)}</div>
       <div class="k">Withdrawn</div><div class="v">${fmtMoney(a.withdrawn)}</div>
-      <div class="k">Net</div><div class="v ${a.net >= 0 ? "green" : "red"}">${fmtMoney(a.net)}</div>
+      <div class="k">Net P&L</div><div class="v" style="color:var(--${(a.net || 0) >= 0 ? "green" : "red"})">${(a.net || 0) >= 0 ? "+" : ""}${fmtMoney(a.net)}</div>
+      <div class="k">X Ratio</div><div class="v" style="color:var(--${xr >= 1.0 ? "green" : "red"})">${fmtNum(xr, 2)}x</div>
       <div class="k">Lifetime</div><div class="v">${fmtNum(a.lifetime_days, 1)}d</div>
-      <div class="k">W/S Ratio</div><div class="v">${a.stake > 0 ? fmtNum((a.withdrawn || 0) / a.stake, 2) : "—"}</div>
-      <div class="k">$/Day</div><div class="v">${a.lifetime_days > 0 ? fmtMoney((a.withdrawn || 0) / a.lifetime_days) : "—"}</div>
+      <div class="k">Net $/Day</div><div class="v" style="color:var(--${netperday >= 0 ? "green" : "red"})">${fmtMoney(netperday)}</div>
+    </div>
+    ${basketHTML}
+    ${configHTML}
+    <div class="notes-section">
+      <div class="notes-section-title">Notes</div>
+      <textarea id="experiment-notes" placeholder="Add notes about this experiment...">${savedNotes}</textarea>
     </div>
     <div class="detail-timeline" id="detail-timeline"></div>
     <div class="detail-actions">
@@ -1036,6 +1167,14 @@ function showAccountDetail(a) {
   }
   document.getElementById("next-acct-btn").onclick = () => navigateAccount(a.num, 1);
   document.getElementById("prev-acct-btn").onclick = () => navigateAccount(a.num, -1);
+
+  // Notes auto-save
+  const notesEl = document.getElementById("experiment-notes");
+  if (notesEl) {
+    notesEl.addEventListener("input", () => {
+      localStorage.setItem(notesKey, notesEl.value);
+    });
+  }
 }
 
 // ----- M1 candle swap -----
