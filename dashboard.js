@@ -132,57 +132,70 @@ function renderSummaryOnly(entry) {
   state.currentBundle = null;
   document.getElementById("hdr-experiment-id").textContent = entry.experiment_id;
   document.getElementById("hdr-fold-period").textContent = `${entry.fold} · ${entry.eval_start}..${entry.eval_end}`;
-  document.getElementById("hdr-total-return").textContent = (entry.total_return || 0).toFixed(3) + "x";
-  document.getElementById("hdr-bank-range").textContent = `ends at ${fmtMoney(entry.bank_end)}`;
-  document.getElementById("hdr-accounts").textContent = entry.total_accounts || "—";
-  document.getElementById("hdr-blowups").textContent = `${entry.blowup_count || 0} blowups`;
+  document.getElementById("hdr-extraction").textContent = "—";
+  document.getElementById("hdr-extraction-sub").textContent = "";
+  document.getElementById("hdr-pool").textContent = "—";
+  document.getElementById("hdr-profitable").textContent = "—";
   document.getElementById("hdr-lifetime").textContent = "—";
-  document.getElementById("hdr-withdrawn").textContent = "—";
+  document.getElementById("hdr-perday").textContent = "—";
+  document.getElementById("hdr-costs").textContent = "—";
   document.getElementById("data-warning-card").style.display = "";
   document.getElementById("data-warning-text").textContent =
-    "Legacy result — no per-account records. Only aggregate metrics are available. Re-run with patched harness to get interactive detail.";
+    "Legacy — no per-account records. Re-run with patched harness.";
 
   clearCharts();
-  document.getElementById("stats-body").innerHTML = "<div class='placeholder'>Summary only — bundle this experiment to see the chart.</div>";
+  const tableBody = document.querySelector("#accounts-table tbody");
+  if (tableBody) tableBody.innerHTML = "";
   document.getElementById("detail-body").innerHTML = "<div class='placeholder'>Bundle this experiment for interactive account inspection.</div>";
-  document.getElementById("policy-source").textContent = "(not available for legacy experiments)";
 }
 
 function renderBundle(b) {
-  // header cards
+  // fleet summary bar
   const m = b.metrics || {};
+  const accounts = b.accounts || [];
   document.getElementById("hdr-experiment-id").textContent = b.experiment_id;
   document.getElementById("hdr-fold-period").textContent = `${b.fold} · ${b.eval_start}..${b.eval_end}`;
-  const tr = m.total_return || 0;
-  const trEl = document.getElementById("hdr-total-return");
-  trEl.textContent = tr.toFixed(3) + "x";
-  trEl.className = "card-value " + (tr >= 1 ? "green" : "red");
-  document.getElementById("hdr-bank-range").textContent = `${fmtMoney(m.bank_start)} → ${fmtMoney(m.bank_end)}`;
-  document.getElementById("hdr-accounts").textContent = m.total_accounts || b.accounts.length;
-  document.getElementById("hdr-blowups").textContent = `${m.blowup_count || 0} blowups`;
-  document.getElementById("hdr-lifetime").textContent = fmtNum(m.avg_account_lifetime_days, 1) + " d";
-  document.getElementById("hdr-withdrawn").textContent = fmtMoney(m.total_withdrawn);
   document.getElementById("data-warning-card").style.display = "none";
 
-  document.getElementById("policy-source").textContent = b.policy_source || "(not embedded)";
+  // Compute fleet metrics from account data
+  const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
+  const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
+  const startingCap = b.starting_capital || m.bank_start || 5000;
 
-  // stats panel
-  document.getElementById("stats-body").innerHTML = `
-    <div class="stats-grid">
-      <div class="k">Total return</div><div class="v">${fmtNum(m.total_return, 3)}x</div>
-      <div class="k">Fleet ROI</div><div class="v">${fmtNum(m.fleet_roi, 3)}</div>
-      <div class="k">Bank start</div><div class="v">${fmtMoney(m.bank_start)}</div>
-      <div class="k">Bank end</div><div class="v">${fmtMoney(m.bank_end)}</div>
-      <div class="k">Total withdrawn</div><div class="v">${fmtMoney(m.total_withdrawn)}</div>
-      <div class="k">Total deployed</div><div class="v">${fmtMoney(m.total_deployed)}</div>
-      <div class="k">Accounts</div><div class="v">${m.total_accounts || 0}</div>
-      <div class="k">Blowups</div><div class="v">${m.blowup_count || 0}</div>
-      <div class="k">Survival rate</div><div class="v">${fmtNum((m.survival_rate || 0) * 100, 1)}%</div>
-      <div class="k">Avg lifetime</div><div class="v">${fmtNum(m.avg_account_lifetime_days, 1)} d</div>
-      <div class="k">Wd / day</div><div class="v">${fmtMoney(m.withdrawal_per_day)}</div>
-      <div class="k">Commission</div><div class="v">${fmtMoney(m.total_commission)}</div>
-      <div class="k">Swap</div><div class="v">${fmtMoney(m.total_swap)}</div>
-    </div>`;
+  // Fleet Extraction: sum(withdrawn) / starting_capital
+  const extraction = totalStake > 0 ? totalWithdrawn / startingCap : 0;
+  const extEl = document.getElementById("hdr-extraction");
+  extEl.textContent = fmtNum(extraction, 3) + "x";
+  extEl.className = "metric-value " + (extraction >= 1 ? "green" : "red");
+  document.getElementById("hdr-extraction-sub").textContent = `${fmtMoney(totalWithdrawn)} extracted`;
+
+  // Pool: $start -> $end
+  const poolStart = m.bank_start || startingCap;
+  const poolEnd = m.bank_end ?? 0;
+  document.getElementById("hdr-pool").textContent = `${fmtMoney(poolStart)} → ${fmtMoney(poolEnd)}`;
+
+  // Profitable: count(net>=0) / total
+  const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
+  document.getElementById("hdr-profitable").textContent = `${profitable}/${accounts.length}`;
+
+  // Avg Lifetime
+  const lifetimes = accounts.map(a => a.lifetime_days).filter(v => v != null && !isNaN(v));
+  const avgLife = lifetimes.length ? lifetimes.reduce((s, v) => s + v, 0) / lifetimes.length : 0;
+  document.getElementById("hdr-lifetime").textContent = fmtNum(avgLife, 1) + "d";
+
+  // Avg $/Day: mean(withdrawn/lifetime_days) for accounts with lifetime > 0
+  const perDays = accounts.map(a => {
+    if (!a.lifetime_days || a.lifetime_days <= 0) return null;
+    return (a.withdrawn || 0) / a.lifetime_days;
+  }).filter(v => v != null);
+  const avgPerDay = perDays.length ? perDays.reduce((s, v) => s + v, 0) / perDays.length : 0;
+  document.getElementById("hdr-perday").textContent = fmtMoney(avgPerDay);
+
+  // Costs %: (commission+swap) / withdrawn * 100
+  const totalComm = m.total_commission || 0;
+  const totalSwap = m.total_swap || 0;
+  const costsPct = totalWithdrawn > 0 ? ((totalComm + totalSwap) / totalWithdrawn) * 100 : 0;
+  document.getElementById("hdr-costs").textContent = fmtNum(costsPct, 1) + "%";
 
   // charts
   clearCharts();
@@ -190,9 +203,109 @@ function renderBundle(b) {
   populatePriceChart(b);
   populateBankChart(b);
 
+  // accounts table
+  renderAccountsTable(accounts);
+
   // reset detail panel
-  document.getElementById("detail-body").innerHTML = `<div class="placeholder">Click a deploy marker on the chart to inspect an account. ${b.accounts.length} accounts loaded.</div>`;
+  document.getElementById("detail-body").innerHTML = `<div class="placeholder">Click a deploy marker on the chart or a table row to inspect an account. ${accounts.length} accounts loaded.</div>`;
   document.getElementById("close-detail-btn").style.display = "none";
+}
+
+// ----- accounts table -----
+state._tableSortCol = "num";
+state._tableSortAsc = true;
+
+function renderAccountsTable(accounts) {
+  const cols = [
+    { key: "num",       label: "#",         fmt: v => v },
+    { key: "outcome",   label: "Outcome",   fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
+    { key: "stake",     label: "Stake",     fmt: fmtMoney },
+    { key: "withdrawn", label: "Withdrawn", fmt: fmtMoney },
+    { key: "net",       label: "Net",       fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${fmtMoney(v)}</span>` },
+    { key: "ws",        label: "W/S",       fmt: v => fmtNum(v, 2) },
+    { key: "lifetime_days", label: "Life",  fmt: v => fmtNum(v, 1) + "d" },
+    { key: "perday",    label: "$/Day",     fmt: v => fmtMoney(v) },
+  ];
+
+  // Enrich accounts with computed fields
+  const rows = accounts.map(a => ({
+    ...a,
+    ws: (a.stake && a.stake > 0) ? (a.withdrawn || 0) / a.stake : 0,
+    perday: (a.lifetime_days && a.lifetime_days > 0) ? (a.withdrawn || 0) / a.lifetime_days : 0,
+  }));
+
+  // Sort
+  const sortKey = state._tableSortCol;
+  const asc = state._tableSortAsc;
+  rows.sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (typeof va === "string") return asc ? (va||"").localeCompare(vb||"") : (vb||"").localeCompare(va||"");
+    return asc ? (va||0) - (vb||0) : (vb||0) - (va||0);
+  });
+
+  const table = document.getElementById("accounts-table");
+  const thead = table.querySelector("thead tr");
+  const tbody = table.querySelector("tbody");
+
+  // Header
+  thead.innerHTML = cols.map(c => {
+    const isSorted = state._tableSortCol === c.key;
+    const arrow = isSorted ? (state._tableSortAsc ? " ▲" : " ▼") : "";
+    return `<th data-col="${c.key}" class="${isSorted ? "sorted" : ""}">${c.label}<span class="sort-arrow">${arrow}</span></th>`;
+  }).join("");
+
+  // Body
+  tbody.innerHTML = rows.map(a => {
+    const tds = cols.map(c => `<td>${c.fmt(a[c.key])}</td>`).join("");
+    return `<tr data-num="${a.num}">${tds}</tr>`;
+  }).join("");
+
+  // Totals row
+  const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
+  const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
+  const totalNet = accounts.reduce((s, a) => s + (a.net || 0), 0);
+  const totalWs = totalStake > 0 ? totalWithdrawn / totalStake : 0;
+  const avgLife = accounts.length ? accounts.reduce((s, a) => s + (a.lifetime_days || 0), 0) / accounts.length : 0;
+  const avgPerDay = accounts.length ? rows.reduce((s, r) => s + r.perday, 0) / rows.length : 0;
+  const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
+  tbody.innerHTML += `<tr class="totals-row">
+    <td>FLEET</td>
+    <td>${profitable}/${accounts.length} profit</td>
+    <td>${fmtMoney(totalStake)}</td>
+    <td>${fmtMoney(totalWithdrawn)}</td>
+    <td><span style="color:var(--${totalNet >= 0 ? "green" : "red"})">${fmtMoney(totalNet)}</span></td>
+    <td>${fmtNum(totalWs, 2)}</td>
+    <td>${fmtNum(avgLife, 1)}d</td>
+    <td>${fmtMoney(avgPerDay)}</td>
+  </tr>`;
+
+  // Click handlers — sort
+  thead.querySelectorAll("th").forEach(th => {
+    th.addEventListener("click", () => {
+      const col = th.dataset.col;
+      if (state._tableSortCol === col) {
+        state._tableSortAsc = !state._tableSortAsc;
+      } else {
+        state._tableSortCol = col;
+        state._tableSortAsc = col === "num"; // default asc for #, desc for values
+      }
+      renderAccountsTable(accounts);
+    });
+  });
+
+  // Click handlers — row select
+  tbody.querySelectorAll("tr:not(.totals-row)").forEach(tr => {
+    tr.addEventListener("click", () => {
+      const num = parseInt(tr.dataset.num);
+      const acct = state.accountsById[num];
+      if (acct) {
+        // highlight row
+        tbody.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
+        tr.classList.add("selected");
+        showAccountDetail(acct);
+      }
+    });
+  });
 }
 
 // ----- charts -----
@@ -249,55 +362,22 @@ function setupCharts() {
     // "stock" format hides everything below 0.01 which is useless for forex.
     priceFormat: { type: "price", precision: 5, minMove: 0.00001 },
   });
-  // Bank chart — toggleable overlays. All step lines (lineType: 1) because
-  // every value only changes at discrete events.
-  //
-  //   bankSeries     (blue)   Bank / checking account. In the current sim this
-  //                           is the `bank` variable which includes phantom
-  //                           revival money. After the sim is patched to
-  //                           savings-separate accounting, this becomes the
-  //                           honest trading reserve.
-  //   savingsSeries  (teal)   Savings / profit pool. Cumulative withdrawals
-  //                           minus revivals. Under the new sim this is a real
-  //                           money ledger; currently it's derived from the
-  //                           fleet_actual_withdrawn counter. Lives on the
-  //                           LEFT price scale because it's typically 5-10x
-  //                           larger than bank and would otherwise squash it.
-  //   totalSeries    (gold)   Total position = bank + savings (minus phantom
-  //                           revivals). The single line that answers "is the
-  //                           strategy making money overall?" Default hidden.
-  //   capitalLine    (dashed) Starting capital reference on the bank scale.
-  // PRIMARY: savings line — the money the trader actually has at any moment.
-  // Steps up on withdrawals (profit extracted), steps down on revivals
-  // (money put back at risk). This is the line that tells the whole story.
-  // Uses the RIGHT price scale so the account-outcome markers align.
-  state.savingsSeries = state.bankChart.addLineSeries({
-    color: COLORS.teal, lineWidth: 2,
-    lineType: 1,
-    title: "Savings",
-  });
-  // SECONDARY (default hidden): total = bank + savings. Shows the "honest
-  // multiplier" value at any checkpoint. Useful for end-of-fold interpretation
-  // but redundant during the run since bank ≈ 0 most of the time.
-  state.totalSeries = state.bankChart.addLineSeries({
-    color: COLORS.gold, lineWidth: 2,
-    lineType: 1,
-    title: "Total (bank+savings)",
-    visible: false,
-  });
-  // DEBUGGING (default hidden): bank = trading reserve. Oscillates between
-  // $0 and ~$5000. Not informative at strategy-assessment zoom.
+  // Bank chart — pool balance (cyan step line) + starting capital reference (gray dashed).
+  // bank_curve[].bank is actually the POOL balance (mapped from v3 pool_curve).
   state.bankSeries = state.bankChart.addLineSeries({
-    color: COLORS.blue, lineWidth: 1,
+    color: COLORS.cyan, lineWidth: 2,
     lineType: 1,
-    lineStyle: 2, // dashed
-    title: "Bank",
-    visible: false,
+    title: "Pool Balance",
   });
   state.capitalLine = state.bankChart.addLineSeries({
     color: COLORS.gray, lineWidth: 1, lineStyle: 2, // dashed
     title: "Starting capital",
   });
+  // Keep savingsSeries as null — trace overlay adds equity/balance as needed.
+  // The marker LOD code references savingsSeries for bank markers, so point it
+  // at bankSeries instead.
+  state.savingsSeries = state.bankSeries;
+  state.totalSeries = null;
   state.bankChart.priceScale("right").applyOptions({
     scaleMargins: { top: 0.05, bottom: 0.05 },
   });
@@ -474,15 +554,11 @@ function applyMarkersForVisibleRange(range) {
     finalPriceMarkers.sort((a, b) => a.time - b.time);
   }
   state.candleSeries.setMarkers(finalPriceMarkers.map(stripInternal));
-  // Markers go on savingsSeries (the primary visible line), not bankSeries
-  // (which is hidden by default). This ensures account outcomes and revival
-  // arrows are always visible on the main savings curve.
-  if (state.fullBankMarkers && state.savingsSeries) {
-    const revivalsOn = state._revivalMarkersVisible !== false;
-    let vbank = state.fullBankMarkers.filter(m => m.time >= from && m.time <= to);
-    if (!revivalsOn) vbank = vbank.filter(m => m._kind !== "revival");
+  // Bank chart markers (account outcomes on the pool balance line).
+  if (state.fullBankMarkers && state.bankSeries) {
+    const vbank = state.fullBankMarkers.filter(m => m.time >= from && m.time <= to);
     const cbank = cullBankMarkers(vbank, 80);
-    state.savingsSeries.setMarkers(cbank.map(stripInternal));
+    state.bankSeries.setMarkers(cbank.map(stripInternal));
   }
 }
 
@@ -529,18 +605,11 @@ function populateBankChart(b) {
     return out;
   }
 
-  const deduped     = prep(b.bank_curve,    "bank");
-  const totalData   = prep(b.total_curve,   "total");
-  const savingsData = prep(b.savings_curve, "savings");
-  state.bankSeries.setData(deduped);
-  if (state.totalSeries) state.totalSeries.setData(totalData);
-  if (state.savingsSeries) state.savingsSeries.setData(savingsData);
+  // bank_curve[].bank is actually the POOL balance (mapped from v3 pool_curve)
+  const poolData = prep(b.bank_curve, "bank");
+  state.bankSeries.setData(poolData);
 
-  // Account-number markers on the bank curve. One marker per account, placed
-  // at its blowup_time (the moment the bank settles to `bank_after` because
-  // of this account's outcome). Colored by outcome so the user can scan the
-  // curve and immediately see which accounts drove each segment.
-  // Uses the same outcome->color mapping as the price chart deploy arrows.
+  // Account-number markers on the pool curve
   const bankMarkers = [];
   for (const a of b.accounts) {
     const t = toUnix(a.blowup_time) || toUnix(a.deploy_time);
@@ -557,34 +626,14 @@ function populateBankChart(b) {
       _kind: "account",
     });
   }
-  // Revival event markers: moments when the sim re-injected $starting_capital
-  // into the bank from the accumulated withdrawal pool. Tagged with _kind so
-  // the toggle-revivals checkbox can filter them out.
-  for (const ev of (b.revival_events || [])) {
-    bankMarkers.push({
-      time: ev.time,
-      position: "belowBar",
-      color: COLORS.teal,
-      shape: "arrowUp",
-      text: `+$${Math.round(ev.amount/1000)}k`,
-      _kind: "revival",
-    });
-  }
   bankMarkers.sort((x, y) => x.time - y.time);
-  // Store the full bank marker set for LOD culling; apply initial cull,
-  // stripping internal fields and respecting the revivals-visibility toggle.
   state.fullBankMarkers = bankMarkers;
-  const revivalsOn = state._revivalMarkersVisible !== false;
-  const initialBank = revivalsOn ? bankMarkers : bankMarkers.filter(m => m._kind !== "revival");
-  state.savingsSeries.setMarkers(cullBankMarkers(initialBank, 80).map(stripInternal));
+  state.bankSeries.setMarkers(cullBankMarkers(bankMarkers, 80).map(stripInternal));
 
-  // Starting-capital reference line. Extended to span the full price-chart
-  // time range (first candle -> last candle) so that when the price chart is
-  // panned to a time where no bank-curve points exist, the bank chart still
-  // has data at that time and can follow the sync without clamping.
+  // Starting-capital reference line spanning full price-chart time range
   const candles = b.candles_m15 || [];
-  const rangeStart = candles.length ? candles[0].t : (deduped[0]?.time);
-  const rangeEnd   = candles.length ? candles[candles.length - 1].t : (deduped[deduped.length - 1]?.time);
+  const rangeStart = candles.length ? candles[0].t : (poolData[0]?.time);
+  const rangeEnd   = candles.length ? candles[candles.length - 1].t : (poolData[poolData.length - 1]?.time);
   if (rangeStart != null && rangeEnd != null && rangeStart < rangeEnd) {
     const cap = b.starting_capital || 5000;
     state.capitalLine.setData([
@@ -798,7 +847,7 @@ function showAccountDetail(a) {
   const deployT = toUnix(a.deploy_time);
   const blowT = toUnix(a.blowup_time);
   const events = [];
-  events.push({ t: deployT, kind: "DEPLOY", cls: "deploy", desc: `stake $${a.stake} · bank $${fmtNum(a.deploy_bank_balance, 0)} · v20m ${fmtNum(a.deploy_v20m, 1)} · v24h ${fmtNum(a.deploy_v24h, 1)}` });
+  events.push({ t: deployT, kind: "DEPLOY", cls: "deploy", desc: `stake ${fmtMoney(a.stake)}` });
   for (const ev of (a.recovery_events || [])) {
     events.push({
       t: toUnix(ev.time), kind: ev.action || "RECOVERY", cls: "recovery",
@@ -829,12 +878,8 @@ function showAccountDetail(a) {
       <div class="k">Withdrawn</div><div class="v">${fmtMoney(a.withdrawn)}</div>
       <div class="k">Net</div><div class="v ${a.net >= 0 ? "green" : "red"}">${fmtMoney(a.net)}</div>
       <div class="k">Lifetime</div><div class="v">${fmtNum(a.lifetime_days, 1)}d</div>
-      <div class="k">v20m @deploy</div><div class="v">${fmtNum(a.deploy_v20m, 1)}</div>
-      <div class="k">v24h @deploy</div><div class="v">${fmtNum(a.deploy_v24h, 1)}</div>
-      <div class="k">Hour @deploy</div><div class="v">${a.deploy_hour ?? "—"}</div>
-      <div class="k">Alpha @deploy</div><div class="v">${fmtNum(a.deploy_account_alpha, 3)}</div>
-      <div class="k">Bank @deploy</div><div class="v">${fmtMoney(a.deploy_bank_balance)}</div>
-      <div class="k">Bank after</div><div class="v">${fmtMoney(a.bank_after)}</div>
+      <div class="k">W/S Ratio</div><div class="v">${a.stake > 0 ? fmtNum((a.withdrawn || 0) / a.stake, 2) : "—"}</div>
+      <div class="k">$/Day</div><div class="v">${a.lifetime_days > 0 ? fmtMoney((a.withdrawn || 0) / a.lifetime_days) : "—"}</div>
     </div>
     <div class="detail-timeline" id="detail-timeline"></div>
     <div class="detail-actions">
@@ -904,29 +949,10 @@ function closeDetail() {
   if (!state.currentBundle) return;
   clearTraceOverlay();
   document.getElementById("detail-body").innerHTML =
-    `<div class="placeholder">Click a deploy marker on the chart to inspect an account. ${state.currentBundle.accounts.length} accounts loaded.</div>`;
+    `<div class="placeholder">Click a deploy marker on the chart or a table row to inspect an account. ${state.currentBundle.accounts.length} accounts loaded.</div>`;
+  // Deselect table row
+  document.querySelectorAll("#accounts-table tbody tr.selected").forEach(r => r.classList.remove("selected"));
   document.getElementById("close-detail-btn").style.display = "none";
-}
-
-// ----- bank chart toggles -----
-// Track revival visibility separately because it's a marker set, not a series.
-function applyBankToggleVisibility() {
-  if (!state.bankChart) return;
-  const get = id => document.getElementById(id);
-  const bankOn     = get("toggle-bank")?.checked     ?? true;
-  const savingsOn  = get("toggle-savings")?.checked  ?? true;
-  const totalOn    = get("toggle-total")?.checked    ?? false;
-  const startingOn = get("toggle-starting")?.checked ?? true;
-  const revivalsOn = get("toggle-revivals")?.checked ?? true;
-  try {
-    if (state.bankSeries)    state.bankSeries.applyOptions({ visible: bankOn });
-    if (state.savingsSeries) state.savingsSeries.applyOptions({ visible: savingsOn });
-    if (state.totalSeries)   state.totalSeries.applyOptions({ visible: totalOn });
-    if (state.capitalLine)   state.capitalLine.applyOptions({ visible: startingOn });
-  } catch (e) { /* chart not ready */ }
-  // Revivals are markers; re-apply the marker set with/without them.
-  state._revivalMarkersVisible = revivalsOn;
-  applyMarkersForVisibleRange();
 }
 
 // ----- multi-fold overview -----
@@ -1136,11 +1162,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const entry = state.manifest.experiments.find(x => x.experiment_id === id && x.fold === fold);
     if (entry) loadCompareExperiment(entry);
   });
-  // Bank chart toggle checkboxes
-  for (const id of ["toggle-bank","toggle-savings","toggle-total","toggle-revivals","toggle-starting"]) {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener("change", applyBankToggleVisibility);
-  }
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeDetail();
   });

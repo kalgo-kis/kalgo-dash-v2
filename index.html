@@ -67,30 +67,40 @@
       <div id="comparison-body"></div>
     </section>
 
-    <section class="summary-row">
-      <div class="summary-card">
-        <div class="card-title">Experiment</div>
-        <div class="card-value" id="hdr-experiment-id">—</div>
-        <div class="card-sub" id="hdr-fold-period">—</div>
+    <section class="fleet-summary" id="fleet-summary">
+      <div class="metric" id="fs-experiment">
+        <div class="metric-label">Experiment</div>
+        <div class="metric-value" id="hdr-experiment-id">—</div>
+        <div class="metric-sub" id="hdr-fold-period">—</div>
       </div>
-      <div class="summary-card">
-        <div class="card-title">Total Return</div>
-        <div class="card-value green" id="hdr-total-return">—</div>
-        <div class="card-sub" id="hdr-bank-range">—</div>
+      <div class="metric primary" id="fs-extraction">
+        <div class="metric-label">Fleet Extraction</div>
+        <div class="metric-value" id="hdr-extraction">—</div>
+        <div class="metric-sub" id="hdr-extraction-sub">—</div>
       </div>
-      <div class="summary-card">
-        <div class="card-title">Accounts</div>
-        <div class="card-value" id="hdr-accounts">—</div>
-        <div class="card-sub" id="hdr-blowups">—</div>
+      <div class="metric" id="fs-pool">
+        <div class="metric-label">Pool</div>
+        <div class="metric-value" id="hdr-pool">—</div>
       </div>
-      <div class="summary-card">
-        <div class="card-title">Avg Lifetime</div>
-        <div class="card-value" id="hdr-lifetime">—</div>
-        <div class="card-sub" id="hdr-withdrawn">—</div>
+      <div class="metric" id="fs-profitable">
+        <div class="metric-label">Profitable</div>
+        <div class="metric-value" id="hdr-profitable">—</div>
       </div>
-      <div class="summary-card warning" id="data-warning-card" style="display:none;">
-        <div class="card-title">⚠ Limited data</div>
-        <div class="card-sub" id="data-warning-text">This experiment has no per-account records.</div>
+      <div class="metric" id="fs-lifetime">
+        <div class="metric-label">Avg Lifetime</div>
+        <div class="metric-value" id="hdr-lifetime">—</div>
+      </div>
+      <div class="metric" id="fs-perday">
+        <div class="metric-label">Avg $/Day</div>
+        <div class="metric-value" id="hdr-perday">—</div>
+      </div>
+      <div class="metric" id="fs-costs">
+        <div class="metric-label">Costs %</div>
+        <div class="metric-value" id="hdr-costs">—</div>
+      </div>
+      <div class="metric warning" id="data-warning-card" style="display:none;">
+        <div class="metric-label">Limited data</div>
+        <div class="metric-sub" id="data-warning-text">No per-account records.</div>
       </div>
     </section>
 
@@ -114,40 +124,25 @@
 
     <section class="chart-section">
       <div class="chart-header">
-        <span class="chart-title">Fleet Savings Curve</span>
-        <span class="bank-toggles" id="bank-toggles">
-          <label class="bank-toggle"><input type="checkbox" id="toggle-savings" checked><span class="swatch savings"></span>Savings</label>
-          <label class="bank-toggle"><input type="checkbox" id="toggle-revivals" checked><span class="swatch revivals"></span>Revivals</label>
-          <label class="bank-toggle"><input type="checkbox" id="toggle-starting" checked><span class="swatch starting"></span>Starting cap</label>
-          <label class="bank-toggle"><input type="checkbox" id="toggle-total"><span class="swatch total"></span>Total</label>
-          <label class="bank-toggle"><input type="checkbox" id="toggle-bank"><span class="swatch bank"></span>Bank</label>
-        </span>
+        <span class="chart-title">Fleet Pool Balance</span>
       </div>
       <div id="bank-chart" class="chart tall"></div>
     </section>
 
-    <section class="bottom-row">
-      <div class="panel" id="stats-panel">
-        <div class="panel-title">Summary</div>
-        <div id="stats-body">Select an experiment</div>
+    <section class="accounts-section">
+      <div class="accounts-table-wrap" id="accounts-table-wrap">
+        <table class="accounts-table" id="accounts-table">
+          <thead><tr></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
       <div class="panel wide" id="detail-panel">
         <div class="panel-title">
           <span>Account Detail</span>
           <button id="close-detail-btn" style="display:none;">✕</button>
         </div>
-        <div id="detail-body" class="placeholder">Click a deploy marker on the chart to inspect an account</div>
+        <div id="detail-body" class="placeholder">Click a deploy marker on the chart or a table row to inspect an account</div>
       </div>
-    </section>
-
-    <section class="panel" id="config-panel">
-      <div class="panel-title">
-        <span>Policy Source</span>
-        <span class="muted" style="font-size:11px;font-weight:400;">
-          Note: current best policy.py only — older experiments' exact policies are not saved on disk
-        </span>
-      </div>
-      <pre id="policy-source">—</pre>
     </section>
   </div>
 
