@@ -1192,12 +1192,45 @@ async function loadM1Data() {
   }
 }
 
+/**
+ * Compute the effective end time for an account. For blowups, use blowup_time.
+ * For survivors (blowup_time is null), use the last trace event time or eval_end.
+ */
+function accountEndTime(a) {
+  const bt = toUnix(a.blowup_time);
+  if (bt) return bt;
+
+  // Survivor: find the last trace event
+  if (a.trace) {
+    const allTimes = [
+      ...(a.trace.orders || []).map(o => o.time),
+      ...(a.trace.closes || []).map(c => c.time),
+      ...(a.trace.equity_snapshots || []).map(s => s.time),
+      ...(a.trace.withdrawals || []).map(w => w.time),
+    ];
+    if (allTimes.length) return Math.max(...allTimes);
+  }
+
+  // Fallback: eval_end from the bundle, or last candle time
+  const b = state.currentBundle;
+  if (b && b.eval_end) {
+    const d = new Date(b.eval_end + "T23:59:00Z");
+    if (!isNaN(d)) return Math.floor(d.getTime() / 1000);
+  }
+  if (b && b.candles_m15 && b.candles_m15.length) {
+    return b.candles_m15[b.candles_m15.length - 1].t;
+  }
+
+  const deployT = toUnix(a.deploy_time) || 0;
+  return deployT + 86400;
+}
+
 async function switchToM1(a) {
   const m1Raw = await loadM1Data();
   if (!m1Raw || !state.candleSeries) return;
 
   const deployT = toUnix(a.deploy_time) || 0;
-  const endT = toUnix(a.blowup_time) || deployT + 86400;
+  const endT = accountEndTime(a);
   const pad = Math.max(3600, (endT - deployT) * 0.1);
   const from = deployT - pad;
   const to = endT + pad;
@@ -1251,7 +1284,7 @@ function switchToM15() {
 
 function zoomToAccount(a) {
   const from = toUnix(a.deploy_time);
-  const to = toUnix(a.blowup_time) || from + 86400;
+  const to = accountEndTime(a);
   if (!from || !to) return;
   // pad by 10% on each side
   const pad = Math.max(3600, (to - from) * 0.15);
