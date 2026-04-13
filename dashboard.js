@@ -729,18 +729,53 @@ function showTraceOverlay(a) {
     return candleTimes[lo];
   }
 
-  // Collect all ticks: entries + TP closes, mapped to nearest candle time
+  // Collect entry ticks and TP close ticks, mapped to nearest candle time.
+  // Also build basket cycles: group entries by side between consecutive closes,
+  // so we can draw dashed lines from entries to their TP close.
   const allTicks = [];
+  const basketLines = []; // {fromT, fromV, toT, toV, color} for dashed lines
+
+  // Group entries by side, tracking current basket cycle
+  const pendingBuy = [];  // entries in current buy basket cycle
+  const pendingSell = []; // entries in current sell basket cycle
+
+  // Merge entries and closes chronologically
+  const allEvents = [];
   for (const e of entries) {
-    const isBuy = (e.dir || "").toLowerCase() === "buy";
-    allTicks.push({ t: nearestCandleTime(e.time_unix), v: e.price, color: isBuy ? COLORS.green : COLORS.red });
+    allEvents.push({ type: "entry", time: e.time_unix, data: e });
   }
   for (const ev of (a.basket_close_events || [])) {
     const t = toUnix(ev.time);
-    const cp = ev.close_price || 0;
-    if (!t || !cp) continue;
-    const side = (ev.closed_basket || "").toLowerCase();
-    allTicks.push({ t: nearestCandleTime(t), v: cp, color: side === "buy" ? COLORS.blue : COLORS.purple });
+    if (t) allEvents.push({ type: "close", time: t, data: ev });
+  }
+  allEvents.sort((a, b) => a.time - b.time);
+
+  for (const ev of allEvents) {
+    if (ev.type === "entry") {
+      const e = ev.data;
+      const isBuy = (e.dir || "").toLowerCase() === "buy";
+      const tick = { t: nearestCandleTime(e.time_unix), v: e.price, color: isBuy ? COLORS.green : COLORS.red };
+      allTicks.push(tick);
+      (isBuy ? pendingBuy : pendingSell).push(tick);
+    } else {
+      const c = ev.data;
+      const cp = c.close_price || 0;
+      const side = (c.closed_basket || "").toLowerCase();
+      const closeT = nearestCandleTime(ev.time);
+      if (cp > 0) {
+        const closeColor = side === "buy" ? COLORS.blue : COLORS.purple;
+        allTicks.push({ t: closeT, v: cp, color: closeColor });
+        // Draw dashed lines from each pending entry to this close
+        const pending = side === "buy" ? pendingBuy : pendingSell;
+        const lineColor = side === "buy" ? "rgba(63,185,80,0.35)" : "rgba(248,81,73,0.35)";
+        for (const entry of pending) {
+          basketLines.push({ fromT: entry.t, fromV: entry.v, toT: closeT, toV: cp, color: lineColor });
+        }
+        // Clear the pending basket for this side
+        if (side === "buy") pendingBuy.length = 0;
+        else pendingSell.length = 0;
+      }
+    }
   }
   allTicks.sort((a, b) => a.t - b.t);
 
@@ -801,12 +836,29 @@ function showTraceOverlay(a) {
       offsetY = paneRect.top - chartRect.top;
     }
 
+    // Draw dashed lines from entries to their TP close
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    for (const ln of basketLines) {
+      const x1 = ts.timeToCoordinate(ln.fromT);
+      const y1 = state.candleSeries.priceToCoordinate(ln.fromV);
+      const x2 = ts.timeToCoordinate(ln.toT);
+      const y2 = state.candleSeries.priceToCoordinate(ln.toV);
+      if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
+      ctx.strokeStyle = ln.color;
+      ctx.beginPath();
+      ctx.moveTo(x1 + offsetX, y1 + offsetY);
+      ctx.lineTo(x2 + offsetX, y2 + offsetY);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Draw entry and close ticks
     for (const tk of allTicks) {
       const x = ts.timeToCoordinate(tk.t);
       if (x === null) continue;
       const y = state.candleSeries.priceToCoordinate(tk.v);
       if (y === null) continue;
-      // Draw at offset position — no bounds filtering
       ctx.fillStyle = tk.color;
       ctx.fillRect(x + offsetX - 4, y + offsetY - 1, 8, 2);
     }
@@ -816,24 +868,40 @@ function showTraceOverlay(a) {
 
   drawFrame();
 
-  // Withdrawal + blowup as text markers
-  const markers = [];
-  for (const ev of (trace.withdrawal_events || [])) {
-    const t15 = Math.floor(ev.time_unix / 900) * 900;
-    markers.push({
-      time: t15, position: "aboveBar", color: COLORS.gold,
-      shape: "arrowDown", text: `$${Math.round(ev.amount)}`, size: 0,
-    });
+  // Markers: blowup + total withdrawn (default) or individual withdrawals (toggled)
+  const wdEvents = trace.withdrawal_events || [];
+  const totalWd = wdEvents.reduce((s, ev) => s + (ev.amount || 0), 0);
+  state._traceWdEvents = wdEvents;
+  state._traceAccount = a;
+  state._traceShowAllWd = false;
+
+  function buildTraceMarkers() {
+    const markers = [];
+    if (state._traceShowAllWd) {
+      for (const ev of wdEvents) {
+        const t15 = Math.floor(ev.time_unix / 900) * 900;
+        markers.push({ time: t15, position: "aboveBar", color: COLORS.gold,
+          shape: "arrowDown", text: `$${Math.round(ev.amount)}`, size: 0 });
+      }
+    } else if (totalWd > 0) {
+      // Show total withdrawn once, at the midpoint of account life
+      const deployT = toUnix(a.deploy_time) || 0;
+      const endT = blowupT || deployT + 86400;
+      const midT = Math.floor(((deployT + endT) / 2) / 900) * 900;
+      markers.push({ time: midT, position: "aboveBar", color: COLORS.gold,
+        shape: "arrowDown", text: `wd $${Math.round(totalWd)}`, size: 0 });
+    }
+    if (a.blowup && blowupT) {
+      const t15 = Math.floor(blowupT / 900) * 900;
+      markers.push({ time: t15, position: "aboveBar", color: COLORS.red,
+        shape: "square", text: "BLOWUP", size: 1 });
+    }
+    markers.sort((a, b) => a.time - b.time);
+    return markers;
   }
-  if (a.blowup && blowupT) {
-    const t15 = Math.floor(blowupT / 900) * 900;
-    markers.push({
-      time: t15, position: "aboveBar", color: COLORS.red,
-      shape: "square", text: "BLOWUP", size: 1,
-    });
-  }
-  markers.sort((a, b) => a.time - b.time);
-  state.traceEntryMarkers = markers;
+
+  state.traceEntryMarkers = buildTraceMarkers();
+  state._buildTraceMarkers = buildTraceMarkers;
   applyMarkersForVisibleRange();
 
   // Equity + balance curves on the bank chart
@@ -906,6 +974,7 @@ function showAccountDetail(a) {
     <div class="detail-actions">
       <button id="zoom-to-acct-btn">Zoom to account lifetime</button>
       ${a.trace ? '<button id="hide-trades-btn">Hide trades</button>' : '<span class="muted" style="font-size:11px;">No trace data (run with --trace)</span>'}
+      ${a.trace ? '<button id="toggle-wd-btn">Show all withdrawals</button>' : ''}
       <button id="next-acct-btn">Next account &rarr;</button>
       <button id="prev-acct-btn">&larr; Prev account</button>
     </div>
@@ -935,6 +1004,18 @@ function showAccountDetail(a) {
         showTraceOverlay(a);
         zoomToAccount(a);
         hideTradesBtn.textContent = "Hide trades";
+      }
+    };
+  }
+  // Toggle individual withdrawals
+  const toggleWdBtn = document.getElementById("toggle-wd-btn");
+  if (toggleWdBtn) {
+    toggleWdBtn.onclick = () => {
+      state._traceShowAllWd = !state._traceShowAllWd;
+      toggleWdBtn.textContent = state._traceShowAllWd ? "Hide withdrawals" : "Show all withdrawals";
+      if (state._buildTraceMarkers) {
+        state.traceEntryMarkers = state._buildTraceMarkers();
+        applyMarkersForVisibleRange();
       }
     };
   }
