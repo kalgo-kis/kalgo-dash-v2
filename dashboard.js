@@ -223,31 +223,45 @@ state._tableSortAsc = true;
 
 function renderAccountsTable(accounts) {
   const cols = [
-    { key: "num",       label: "#",         fmt: v => v },
-    { key: "outcome",   label: "Outcome",   fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
-    { key: "stake",     label: "Stake",     fmt: fmtMoney },
-    { key: "withdrawn", label: "Withdrawn", fmt: fmtMoney },
-    { key: "net",       label: "Net",       fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${fmtMoney(v)}</span>` },
-    { key: "ws",        label: "W/S",       fmt: v => fmtNum(v, 2) },
-    { key: "lifetime_days", label: "Life",  fmt: v => fmtNum(v, 1) + "d" },
-    { key: "perday",    label: "$/Day",     fmt: v => fmtMoney(v) },
+    { key: "num",        label: "#",           fmt: v => v },
+    { key: "outcome",    label: "Outcome",     fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
+    { key: "poolBefore", label: "Pool Before",  fmt: fmtMoney },
+    { key: "stake",      label: "Deployed",     fmt: v => `-${fmtMoney(v)}` },
+    { key: "withdrawn",  label: "Extracted",    fmt: v => `+${fmtMoney(v)}` },
+    { key: "poolAfter",  label: "Pool After",   fmt: v => fmtMoney(v) },
+    { key: "net",        label: "Net",          fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>` },
+    { key: "lifetime_days", label: "Life",      fmt: v => fmtNum(v, 1) + "d" },
+    { key: "perday",     label: "$/Day",        fmt: v => fmtMoney(v) },
   ];
 
-  // Enrich accounts with computed fields
-  const rows = accounts.map(a => ({
-    ...a,
-    ws: (a.stake && a.stake > 0) ? (a.withdrawn || 0) / a.stake : 0,
-    perday: (a.lifetime_days && a.lifetime_days > 0) ? (a.withdrawn || 0) / a.lifetime_days : 0,
-  }));
+  // Compute pool flow: simulate the pool balance through each account
+  const startingCap = state.currentBundle?.starting_capital || 5000;
+  let pool = startingCap;
+  const rows = accounts.map(a => {
+    const poolBefore = pool;
+    pool -= (a.stake || 0);       // deploy
+    pool += (a.withdrawn || 0);   // withdrawals returned to pool
+    // blowup: residual ~$0. EOT: residual returned but not in 'net'
+    const poolAfter = pool;
+    return {
+      ...a,
+      poolBefore: Math.round(poolBefore * 100) / 100,
+      poolAfter: Math.round(poolAfter * 100) / 100,
+      perday: (a.lifetime_days && a.lifetime_days > 0) ? (a.withdrawn || 0) / a.lifetime_days : 0,
+    };
+  });
 
-  // Sort
+  // Sort (but preserve pool flow order for poolBefore/poolAfter — only sort by non-flow columns)
   const sortKey = state._tableSortCol;
   const asc = state._tableSortAsc;
-  rows.sort((a, b) => {
-    let va = a[sortKey], vb = b[sortKey];
-    if (typeof va === "string") return asc ? (va||"").localeCompare(vb||"") : (vb||"").localeCompare(va||"");
-    return asc ? (va||0) - (vb||0) : (vb||0) - (va||0);
-  });
+  const flowCols = ["poolBefore", "poolAfter"];
+  if (!flowCols.includes(sortKey)) {
+    rows.sort((a, b) => {
+      let va = a[sortKey], vb = b[sortKey];
+      if (typeof va === "string") return asc ? (va||"").localeCompare(vb||"") : (vb||"").localeCompare(va||"");
+      return asc ? (va||0) - (vb||0) : (vb||0) - (va||0);
+    });
+  }
 
   const table = document.getElementById("accounts-table");
   const thead = table.querySelector("thead tr");
@@ -267,20 +281,21 @@ function renderAccountsTable(accounts) {
   }).join("");
 
   // Totals row
-  const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
-  const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
   const totalNet = accounts.reduce((s, a) => s + (a.net || 0), 0);
-  const totalWs = totalStake > 0 ? totalWithdrawn / totalStake : 0;
+  const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
+  const totalDeployed = accounts.reduce((s, a) => s + (a.stake || 0), 0);
   const avgLife = accounts.length ? accounts.reduce((s, a) => s + (a.lifetime_days || 0), 0) / accounts.length : 0;
   const avgPerDay = accounts.length ? rows.reduce((s, r) => s + r.perday, 0) / rows.length : 0;
   const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
+  const lastPool = rows.length ? rows[rows.length - 1].poolAfter : startingCap;
   tbody.innerHTML += `<tr class="totals-row">
     <td>FLEET</td>
     <td>${profitable}/${accounts.length} profit</td>
-    <td>${fmtMoney(totalStake)}</td>
-    <td>${fmtMoney(totalWithdrawn)}</td>
-    <td><span style="color:var(--${totalNet >= 0 ? "green" : "red"})">${fmtMoney(totalNet)}</span></td>
-    <td>${fmtNum(totalWs, 2)}</td>
+    <td>${fmtMoney(startingCap)}</td>
+    <td>-${fmtMoney(totalDeployed)}</td>
+    <td>+${fmtMoney(totalWithdrawn)}</td>
+    <td>${fmtMoney(lastPool)}</td>
+    <td><span style="color:var(--${totalNet >= 0 ? "green" : "red"})">${totalNet >= 0 ? "+" : ""}${fmtMoney(totalNet)}</span></td>
     <td>${fmtNum(avgLife, 1)}d</td>
     <td>${fmtMoney(avgPerDay)}</td>
   </tr>`;
