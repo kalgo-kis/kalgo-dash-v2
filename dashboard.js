@@ -158,25 +158,31 @@ function renderBundle(b) {
   document.getElementById("data-warning-card").style.display = "none";
 
   // Compute fleet metrics from account data
-  const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
-  const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
   const startingCap = b.starting_capital || m.bank_start || 5000;
+  const poolEnd = m.bank_end ?? m.total_end ?? 0;
+  const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
 
-  // Fleet Extraction: sum(withdrawn) / starting_capital
-  const extraction = totalStake > 0 ? totalWithdrawn / startingCap : 0;
-  const extEl = document.getElementById("hdr-extraction");
-  extEl.textContent = fmtNum(extraction, 3) + "x";
-  extEl.className = "metric-value " + (extraction >= 1 ? "green" : "red");
-  document.getElementById("hdr-extraction-sub").textContent = `${fmtMoney(totalWithdrawn)} extracted`;
-
-  // Pool: $start -> $end
-  const poolStart = m.bank_start || startingCap;
-  const poolEnd = m.bank_end ?? 0;
-  document.getElementById("hdr-pool").textContent = `${fmtMoney(poolStart)} → ${fmtMoney(poolEnd)}`;
+  // Fleet P&L: pool_end - pool_start. The only honest number.
+  const fleetPnl = poolEnd - startingCap;
+  const poolReturn = poolEnd / startingCap;
+  const pnlEl = document.getElementById("hdr-pnl");
+  pnlEl.textContent = `${fleetPnl >= 0 ? "+" : ""}${fmtMoney(fleetPnl)}`;
+  pnlEl.className = "metric-value " + (fleetPnl >= 0 ? "green" : "red");
+  document.getElementById("hdr-pnl-sub").textContent = `${fmtNum(poolReturn, 3)}x  (${fmtMoney(startingCap)} → ${fmtMoney(poolEnd)})`;
 
   // Profitable: count(net>=0) / total
-  const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
-  document.getElementById("hdr-profitable").textContent = `${profitable}/${accounts.length}`;
+  const winners = accounts.filter(a => (a.net || 0) >= 0);
+  const losers = accounts.filter(a => (a.net || 0) < 0);
+  document.getElementById("hdr-profitable").textContent = `${winners.length}/${accounts.length}`;
+  document.getElementById("hdr-profitable-sub").textContent = `${losers.length} blowup losses`;
+
+  // Avg Win: mean(net) for accounts where net >= 0
+  const avgWin = winners.length ? winners.reduce((s, a) => s + (a.net || 0), 0) / winners.length : 0;
+  document.getElementById("hdr-avgwin").textContent = `+${fmtMoney(avgWin)}`;
+
+  // Avg Blowup Cost: mean(|net|) for accounts where net < 0
+  const avgLoss = losers.length ? losers.reduce((s, a) => s + Math.abs(a.net || 0), 0) / losers.length : 0;
+  document.getElementById("hdr-avgloss").textContent = `-${fmtMoney(avgLoss)}`;
 
   // Avg Lifetime
   const lifetimes = accounts.map(a => a.lifetime_days).filter(v => v != null && !isNaN(v));
@@ -194,7 +200,7 @@ function renderBundle(b) {
   // Costs %: (commission+swap) / withdrawn * 100
   const totalComm = m.total_commission || 0;
   const totalSwap = m.total_swap || 0;
-  const costsPct = totalWithdrawn > 0 ? ((totalComm + totalSwap) / totalWithdrawn) * 100 : 0;
+  const costsPct = totalWithdrawn > 0 ? (Math.abs(totalComm) + Math.abs(totalSwap)) / totalWithdrawn * 100 : 0;
   document.getElementById("hdr-costs").textContent = fmtNum(costsPct, 1) + "%";
 
   // charts
