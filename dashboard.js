@@ -709,9 +709,10 @@ function showTraceOverlay(a) {
   state.tracePositionLines = [];
 
   // Build candle time lookup: timeToCoordinate only works for times
-  // that exist in the candle data. Map each tick to the nearest candle time.
+  // that exist in the candle data. Use M1 times if M1 is active.
   const b = state.currentBundle;
-  const candleTimes = (b && b.candles_m15) ? b.candles_m15.map(c => c.t) : [];
+  const candleTimes = state._m1CandleTimes
+    || ((b && b.candles_m15) ? b.candles_m15.map(c => c.t) : []);
 
   function nearestCandleTime(unix) {
     if (!candleTimes.length) return unix;
@@ -989,10 +990,12 @@ function showAccountDetail(a) {
   `).join("");
 
   document.getElementById("zoom-to-acct-btn").onclick = () => zoomToAccount(a);
-  // Auto-show trades immediately when clicking an account.
+  // Auto-show trades: switch to M1 candles for this account's range, then overlay
   if (a.trace) {
-    showTraceOverlay(a);
-    zoomToAccount(a);
+    switchToM1(a).then(() => {
+      showTraceOverlay(a);
+      zoomToAccount(a);
+    });
   }
   const hideTradesBtn = document.getElementById("hide-trades-btn");
   if (hideTradesBtn) {
@@ -1023,6 +1026,92 @@ function showAccountDetail(a) {
   document.getElementById("prev-acct-btn").onclick = () => navigateAccount(a.num, -1);
 }
 
+// ----- M1 candle swap -----
+// M1 data loaded on demand from a separate file. Cached after first load.
+state._m1Data = null;       // cached M1 array: [[t,o,h,l,c], ...]
+state._m1Loading = false;
+state._isM1Active = false;
+
+async function loadM1Data() {
+  if (state._m1Data) return state._m1Data;
+  if (state._m1Loading) {
+    // Wait for in-progress load
+    while (state._m1Loading) await new Promise(r => setTimeout(r, 50));
+    return state._m1Data;
+  }
+  state._m1Loading = true;
+  try {
+    const b = state.currentBundle;
+    const fold = b ? b.fold : "fold4";
+    const resp = await fetch(`dashboard_data/${fold}_m1.json`);
+    if (!resp.ok) throw new Error(`M1 data not found for ${fold}`);
+    state._m1Data = await resp.json();
+    return state._m1Data;
+  } catch (e) {
+    console.warn("M1 load failed:", e);
+    return null;
+  } finally {
+    state._m1Loading = false;
+  }
+}
+
+async function switchToM1(a) {
+  const m1Raw = await loadM1Data();
+  if (!m1Raw || !state.candleSeries) return;
+
+  const deployT = toUnix(a.deploy_time) || 0;
+  const endT = toUnix(a.blowup_time) || deployT + 86400;
+  const pad = Math.max(3600, (endT - deployT) * 0.1);
+  const from = deployT - pad;
+  const to = endT + pad;
+
+  // Filter M1 bars to account range (with padding)
+  const m1Candles = [];
+  for (const bar of m1Raw) {
+    const t = bar[0];
+    if (t < from) continue;
+    if (t > to) break;
+    m1Candles.push({ time: t, open: bar[1], high: bar[2], low: bar[3], close: bar[4] });
+  }
+
+  if (m1Candles.length === 0) return;
+
+  // Store M1 candle times for the trace overlay's nearestCandleTime
+  state._m1CandleTimes = m1Candles.map(c => c.time);
+  state._isM1Active = true;
+
+  // Swap the candle series data
+  state.candleSeries.setData(m1Candles);
+
+  // Update the chart header
+  const header = document.querySelector(".chart-title");
+  if (header) header.textContent = "EURGBP (M1) · Account #" + a.num;
+}
+
+function switchToM15() {
+  if (!state._isM1Active || !state.currentBundle) return;
+  state._isM1Active = false;
+  state._m1CandleTimes = null;
+
+  // Restore M15 candles
+  const candles = state.currentBundle.candles_m15.map(c => ({
+    time: c.t, open: c.o, high: c.h, low: c.l, close: c.c,
+  }));
+  state.candleSeries.setData(candles);
+
+  // Restore markers
+  const raw = buildMarkers(state.currentBundle.accounts);
+  raw.sort((a, b) => a.time - b.time);
+  state.fullPriceMarkers = raw;
+  applyMarkersForVisibleRange();
+
+  // Restore header
+  const header = document.querySelector(".chart-title");
+  if (header) header.textContent = "EURGBP (M15) · Accounts overlay";
+
+  state.priceChart.timeScale().fitContent();
+}
+
 function zoomToAccount(a) {
   const from = toUnix(a.deploy_time);
   const to = toUnix(a.blowup_time) || from + 86400;
@@ -1035,6 +1124,7 @@ function zoomToAccount(a) {
 function navigateAccount(currentNum, dir) {
   if (!state.currentBundle) return;
   clearTraceOverlay();
+  switchToM15();  // Reset to M15 before loading next account
   const arr = state.currentBundle.accounts;
   const idx = arr.findIndex(a => a.num === currentNum);
   if (idx < 0) return;
@@ -1050,6 +1140,7 @@ function resetZoom() {
 function closeDetail() {
   if (!state.currentBundle) return;
   clearTraceOverlay();
+  switchToM15();  // Restore M15 candles
   document.getElementById("detail-body").innerHTML =
     `<div class="placeholder">Click a deploy marker on the chart or a table row to inspect an account. ${state.currentBundle.accounts.length} accounts loaded.</div>`;
   // Deselect table row
