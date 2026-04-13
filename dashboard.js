@@ -885,11 +885,10 @@ function showTraceOverlay(a) {
           shape: "arrowDown", text: `$${Math.round(ev.amount)}`, size: 0 });
       }
     } else if (totalWd > 0) {
-      // Show total withdrawn once, at the midpoint of account life
-      const deployT = toUnix(a.deploy_time) || 0;
-      const endT = blowupT || deployT + 86400;
-      const midT = Math.floor(((deployT + endT) / 2) / 900) * 900;
-      markers.push({ time: midT, position: "aboveBar", color: COLORS.gold,
+      // Show total withdrawn near the end of the account's life
+      const endT = blowupT || (toUnix(a.deploy_time) + 86400);
+      const nearEnd = Math.floor((endT - 3600) / 900) * 900; // 1 hour before close
+      markers.push({ time: nearEnd, position: "aboveBar", color: COLORS.gold,
         shape: "arrowDown", text: `wd $${Math.round(totalWd)}`, size: 0 });
     }
     if (a.blowup && blowupT) {
