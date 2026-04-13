@@ -218,9 +218,33 @@ function renderBundle(b) {
   // accounts table
   renderAccountsTable(accounts);
 
+  // experiment config panel
+  renderConfigPanel(b);
+
   // reset detail panel
   document.getElementById("detail-body").innerHTML = `<div class="placeholder">Click a deploy marker on the chart or a table row to inspect an account. ${accounts.length} accounts loaded.</div>`;
   document.getElementById("close-detail-btn").style.display = "none";
+}
+
+function renderConfigPanel(b) {
+  const policySource = b.policy_source || "";
+  const configEl = document.getElementById("config-params");
+  if (policySource) {
+    configEl.innerHTML = `<pre>${policySource}</pre>`;
+  } else {
+    configEl.innerHTML = `<div class="placeholder">No configuration data embedded in this experiment.</div>`;
+  }
+
+  // Notes: load from localStorage
+  const expId = b.experiment_id || "";
+  const notesKey = `kalgo_notes_${expId}`;
+  const savedNotes = localStorage.getItem(notesKey) || "";
+  const notesEl = document.getElementById("experiment-notes");
+  notesEl.value = savedNotes;
+  // Auto-save on input
+  notesEl.oninput = () => {
+    localStorage.setItem(notesKey, notesEl.value);
+  };
 }
 
 // ----- accounts table -----
@@ -1024,11 +1048,23 @@ function computeBasketMetrics(a) {
     }
   }
 
+  // Median helper
+  const median = arr => {
+    if (!arr.length) return 0;
+    const s = arr.slice().sort((a, b) => a - b);
+    const mid = Math.floor(s.length / 2);
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  };
+
   return {
     tpCount,
     avgDepth: depths.length ? depths.reduce((s, v) => s + v, 0) / depths.length : 0,
+    medianDepth: median(depths),
+    maxDepth: depths.length ? Math.max(...depths) : 0,
     avgTimeToTP: timesToTP.length ? timesToTP.reduce((s, v) => s + v, 0) / timesToTP.length : 0,
+    medianTimeToTP: median(timesToTP),
     maxBasketDD: maxDDs.length ? Math.max(...maxDDs) : 0,
+    avgBasketDD: maxDDs.length ? maxDDs.reduce((s, v) => s + v, 0) / maxDDs.length : 0,
     buyTPs,
     sellTPs,
   };
@@ -1036,26 +1072,6 @@ function computeBasketMetrics(a) {
 
 // ----- account detail -----
 function showAccountDetail(a) {
-  const deployT = toUnix(a.deploy_time);
-  const blowT = toUnix(a.blowup_time);
-  const events = [];
-  events.push({ t: deployT, kind: "DEPLOY", cls: "deploy", desc: `stake ${fmtMoney(a.stake)}` });
-  for (const ev of (a.recovery_events || [])) {
-    events.push({
-      t: toUnix(ev.time), kind: ev.action || "RECOVERY", cls: "recovery",
-      desc: `dd ${ev.drawdown_pips}p · depth ${ev.basket_depth} · lots ${fmtNum(ev.basket_lots, 2)} · wapp ${fmtNum(ev.basket_wapp, 5)} · eq ${fmtMoney(ev.account_equity)}`,
-    });
-  }
-  for (const ev of (a.basket_close_events || [])) {
-    events.push({
-      t: toUnix(ev.time), kind: ev.close_type || "CLOSE",
-      cls: "close " + ((ev.close_type || "").toLowerCase()),
-      desc: `${ev.closed_basket || ""} · other_depth ${ev.other_basket_depth || 0} · bal ${fmtMoney(ev.balance)}`,
-    });
-  }
-  if (a.blowup) events.push({ t: blowT, kind: "BLOWUP", cls: "blowup", desc: `lifetime ${fmtNum(a.lifetime_days, 1)}d · net ${fmtMoney(a.net)}` });
-  // sort timeline by time
-  events.sort((a, b) => (a.t || 0) - (b.t || 0));
 
   // Computed fields for detail panel
   const xr = (a.stake || 0) > 0 ? (a.withdrawn || 0) / a.stake : 0;
@@ -1069,30 +1085,14 @@ function showAccountDetail(a) {
       <div class="basket-metrics">
         <div class="basket-metrics-title">Basket Metrics</div>
         <div class="basket-metrics-grid">
-          <div class="k">TP Count</div><div class="v">${bm.tpCount}</div>
-          <div class="k">Avg Depth/Basket</div><div class="v">${fmtNum(bm.avgDepth, 1)}</div>
-          <div class="k">Avg Time to TP</div><div class="v">${fmtNum(bm.avgTimeToTP, 1)}h</div>
-          <div class="k">Max Basket DD</div><div class="v">${fmtNum(bm.maxBasketDD, 1)} pips</div>
-          <div class="k">Buy/Sell TPs</div><div class="v">${bm.buyTPs} / ${bm.sellTPs}</div>
+          <div class="k">TP Cycles</div><div class="v">${bm.tpCount}</div>
+          <div class="k">Buy / Sell TPs</div><div class="v">${bm.buyTPs} / ${bm.sellTPs}</div>
+          <div class="k">Depth (avg / median / max)</div><div class="v">${fmtNum(bm.avgDepth, 1)} / ${fmtNum(bm.medianDepth, 0)} / ${bm.maxDepth}</div>
+          <div class="k">Time to TP (avg / median)</div><div class="v">${fmtNum(bm.avgTimeToTP, 1)}h / ${fmtNum(bm.medianTimeToTP, 1)}h</div>
+          <div class="k">Basket DD (avg / max)</div><div class="v">${fmtNum(bm.avgBasketDD, 1)} / ${fmtNum(bm.maxBasketDD, 1)} pips</div>
         </div>
       </div>`;
   }
-
-  // Section C: Config
-  const policySource = state.currentBundle?.policy_source || "";
-  let configHTML = "";
-  if (policySource) {
-    configHTML = `
-      <div class="config-section">
-        <div class="config-section-title">Strategy Config</div>
-        <pre>${policySource}</pre>
-      </div>`;
-  }
-
-  // Section D: Notes
-  const expId = state.currentBundle?.experiment_id || "";
-  const notesKey = `kalgo_notes_${expId}`;
-  const savedNotes = localStorage.getItem(notesKey) || "";
 
   document.getElementById("close-detail-btn").style.display = "";
   document.getElementById("detail-body").innerHTML = `
@@ -1109,12 +1109,6 @@ function showAccountDetail(a) {
       <div class="k">Net $/Day</div><div class="v" style="color:var(--${netperday >= 0 ? "green" : "red"})">${fmtMoney(netperday)}</div>
     </div>
     ${basketHTML}
-    ${configHTML}
-    <div class="notes-section">
-      <div class="notes-section-title">Notes</div>
-      <textarea id="experiment-notes" placeholder="Add notes about this experiment...">${savedNotes}</textarea>
-    </div>
-    <div class="detail-timeline" id="detail-timeline"></div>
     <div class="detail-actions">
       <button id="zoom-to-acct-btn">Zoom to account lifetime</button>
       ${a.trace ? '<button id="hide-trades-btn">Hide trades</button>' : '<span class="muted" style="font-size:11px;">No trace data (run with --trace)</span>'}
@@ -1123,14 +1117,6 @@ function showAccountDetail(a) {
       <button id="prev-acct-btn">&larr; Prev account</button>
     </div>
   `;
-  const tl = document.getElementById("detail-timeline");
-  tl.innerHTML = events.map(ev => `
-    <div class="timeline-row ${ev.cls}">
-      <div class="time">${fmtUnix(ev.t)}</div>
-      <div class="kind">${ev.kind}</div>
-      <div class="desc">${ev.desc}</div>
-    </div>
-  `).join("");
 
   document.getElementById("zoom-to-acct-btn").onclick = () => zoomToAccount(a);
   // Auto-show trades: switch to M1 candles for this account's range, then overlay
