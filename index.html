@@ -73,30 +73,36 @@
         <div class="metric-value" id="hdr-experiment-id">—</div>
         <div class="metric-sub" id="hdr-fold-period">—</div>
       </div>
-      <div class="metric primary" id="fs-poolreturn" title="pool_end / starting_capital. The real money: how much the pool grew after all deploys, withdrawals, and blowups.">
+      <div class="metric primary has-tip" id="fs-poolreturn">
         <div class="metric-label">Pool Return</div>
         <div class="metric-value" id="hdr-poolreturn">—</div>
         <div class="metric-sub" id="hdr-poolreturn-sub">—</div>
+        <div class="metric-tip">pool_end / starting_capital. The real money: how much the pool grew after all deploys, withdrawals, and blowups.</div>
       </div>
-      <div class="metric" id="fs-expectancy" title="(win_rate × avg_win) − (loss_rate × avg_loss). Expected net P&L per account deployment.">
+      <div class="metric has-tip" id="fs-expectancy">
         <div class="metric-label">Expectancy</div>
         <div class="metric-value" id="hdr-expectancy">—</div>
+        <div class="metric-tip">(win_rate &times; avg_win) &minus; (loss_rate &times; avg_loss). Expected net P&amp;L per account deployment.</div>
       </div>
-      <div class="metric" id="fs-profitfactor" title="sum(positive net P&Ls) / sum(|negative net P&Ls|). Above 1.0 means winners outweigh losers in aggregate.">
+      <div class="metric has-tip" id="fs-profitfactor">
         <div class="metric-label">Profit Factor</div>
         <div class="metric-value" id="hdr-profitfactor">—</div>
+        <div class="metric-tip">sum(positive net P&amp;Ls) / sum(|negative net P&amp;Ls|). Above 1.0 means winners outweigh losers in aggregate.</div>
       </div>
-      <div class="metric" id="fs-extractionratio" title="Mean of (withdrawn / stake) per account. How much each account extracts before dying. Above 1.0x means average account pays for itself.">
+      <div class="metric has-tip" id="fs-extractionratio">
         <div class="metric-label">Extraction Ratio</div>
         <div class="metric-value" id="hdr-extractionratio">—</div>
+        <div class="metric-tip">Mean of (withdrawn / stake) per account. How much each account extracts before dying. Above 1.0x means average account pays for itself.</div>
       </div>
-      <div class="metric" id="fs-winrate" title="Fraction of accounts with net P&L ≥ 0. An account is a 'win' if it extracted more than its stake before blowing up.">
+      <div class="metric has-tip" id="fs-winrate">
         <div class="metric-label">Win Rate</div>
         <div class="metric-value" id="hdr-winrate">—</div>
+        <div class="metric-tip">Accounts with net P&amp;L &ge; 0 / total accounts. A &lsquo;win&rsquo; means extracted more than stake before blowing up.</div>
       </div>
-      <div class="metric" id="fs-costs" title="(|commission| + |swap|) / total_withdrawn × 100. Transaction costs as a percentage of extracted profits.">
+      <div class="metric has-tip" id="fs-costs">
         <div class="metric-label">Costs %</div>
         <div class="metric-value" id="hdr-costs">—</div>
+        <div class="metric-tip">(|commission| + |swap|) / total_withdrawn &times; 100. Transaction costs as a percentage of extracted profits.</div>
       </div>
       <div class="metric warning" id="data-warning-card" style="display:none;">
         <div class="metric-label">Limited data</div>
@@ -109,7 +115,8 @@
         <span class="chart-title">EURGBP (M15) · Accounts overlay</span>
         <span class="chart-legend">
           <span class="leg-arrow green">&#9650;</span> deploy (profit)
-          <span class="leg-arrow gray">&#9650;</span> deploy (loss)
+          <span class="leg-arrow red">&#9650;</span> deploy (loss)
+          <span class="leg-arrow gray">&#9650;</span> deploy (total loss)
           <span class="leg-arrow red">&#9660;</span> blowup
           &nbsp;|&nbsp;
           <span class="leg-arrow green">―</span> BUY entry
