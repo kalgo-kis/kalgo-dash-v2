@@ -252,21 +252,40 @@ state._tableSortCol = "num";
 state._tableSortAsc = true;
 
 function renderAccountsTable(accounts) {
+  const colDefs = {
+    num:       { label: "#",          tip: "Account number (deploy order)" },
+    outcome:   { label: "Outcome",    tip: "How the account ended — blowup (margin stop-out) or survived to end of evaluation period" },
+    stake:     { label: "Stake",      tip: "Capital deployed from the pool into this account" },
+    withdrawn: { label: "Extracted",  tip: "Total withdrawn from this account back to the pool during its lifetime" },
+    net:       { label: "Net P&L",    tip: "extracted − stake + residual returned at close. Positive = account paid for itself before dying" },
+    cumulPnl:  { label: "Cumul. P&L", tip: "Running total of Net P&L across all accounts in deploy order. Shows whether the fleet is ahead or behind at each point. Equals pool − starting capital" },
+    lifetime_days: { label: "Life",   tip: "Account lifetime in days from deploy to close" },
+    netperday: { label: "Net $/Day",  tip: "Net P&L ÷ lifetime days. Daily profit rate for this account" },
+  };
   const cols = [
-    { key: "num",       label: "#",              fmt: v => v },
-    { key: "outcome",   label: "Outcome",        fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
-    { key: "stake",     label: "Stake",          fmt: fmtMoney },
-    { key: "withdrawn", label: "Extracted",      fmt: fmtMoney },
-    { key: "net",       label: "Net P&L",        fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>` },
-    { key: "xr",        label: "X Ratio",        fmt: v => `<span style="color:var(--${v >= 1.0 ? "green" : "red"})">${fmtNum(v, 2)}x</span>` },
-    { key: "lifetime_days", label: "Life",       fmt: v => fmtNum(v, 1) + "d" },
-    { key: "netperday", label: "Net $/Day",      fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${fmtMoney(v)}</span>` },
+    { key: "num",       fmt: v => v },
+    { key: "outcome",   fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
+    { key: "stake",     fmt: fmtMoney },
+    { key: "withdrawn", fmt: fmtMoney },
+    { key: "net",       fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>` },
+    { key: "cumulPnl",  fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>` },
+    { key: "lifetime_days", fmt: v => fmtNum(v, 1) + "d" },
+    { key: "netperday", fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${fmtMoney(v)}</span>` },
   ];
 
-  // Compute derived fields per account
+  // Compute derived fields per account.
+  // Cumulative P&L must be computed in deploy order BEFORE sorting.
+  const deployOrder = [...accounts].sort((a, b) => (a.deploy_time || 0) - (b.deploy_time || 0));
+  const cumulMap = {};
+  let running = 0;
+  for (const a of deployOrder) {
+    running += (a.net || 0);
+    cumulMap[a.num] = running;
+  }
+
   const rows = accounts.map(a => ({
     ...a,
-    xr: (a.stake || 0) > 0 ? (a.withdrawn || 0) / a.stake : 0,
+    cumulPnl: cumulMap[a.num] || 0,
     netperday: (a.lifetime_days && a.lifetime_days > 0) ? (a.net || 0) / a.lifetime_days : 0,
   }));
 
@@ -283,11 +302,14 @@ function renderAccountsTable(accounts) {
   const thead = table.querySelector("thead tr");
   const tbody = table.querySelector("tbody");
 
-  // Header
+  // Header with tooltip descriptions
   thead.innerHTML = cols.map(c => {
+    const def = colDefs[c.key] || {};
+    const label = def.label || c.key;
+    const tip = def.tip ? ` title="${def.tip}"` : "";
     const isSorted = state._tableSortCol === c.key;
     const arrow = isSorted ? (state._tableSortAsc ? " \u25B2" : " \u25BC") : "";
-    return `<th data-col="${c.key}" class="${isSorted ? "sorted" : ""}">${c.label}<span class="sort-arrow">${arrow}</span></th>`;
+    return `<th data-col="${c.key}" class="${isSorted ? "sorted" : ""}"${tip} style="cursor:help">${label}<span class="sort-arrow">${arrow}</span></th>`;
   }).join("");
 
   // Body
@@ -316,7 +338,7 @@ function renderAccountsTable(accounts) {
     <td>${fmtMoney(startCap)}</td>
     <td>${fmtMoney(poolEnd)}</td>
     <td><span style="color:var(--${poolNet >= 0 ? "green" : "red"})">${poolNet >= 0 ? "+" : ""}${fmtMoney(poolNet)}</span></td>
-    <td><span style="color:var(--${poolXR >= 1.0 ? "green" : "red"})">${fmtNum(poolXR, 2)}x</span></td>
+    <td><span style="color:var(--${poolNet >= 0 ? "green" : "red"})">${poolNet >= 0 ? "+" : ""}${fmtMoney(poolNet)}</span></td>
     <td>${fmtNum(avgLife, 1)}d</td>
     <td><span style="color:var(--${netPerDay >= 0 ? "green" : "red"})">${fmtMoney(netPerDay)}</span></td>
   </tr>`;
