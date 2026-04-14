@@ -296,22 +296,29 @@ function renderAccountsTable(accounts) {
     return `<tr data-num="${a.num}">${tds}</tr>`;
   }).join("");
 
-  // Totals row
-  const totalNet = accounts.reduce((s, a) => s + (a.net || 0), 0);
+  // Totals row — use pool-based accounting (not sum of per-account net)
+  // Per-account net_pnl includes pre-closure balance for survivors, but the
+  // pool receives less after closing positions at market spread. Pool growth
+  // is the honest number.
+  const b = state.currentBundle;
+  const m = b ? (b.metrics || {}) : {};
+  const startingCap = b ? (b.starting_capital || m.bank_start || 5000) : 5000;
+  const poolEnd = m.bank_end ?? m.total_end ?? 0;
+  const fleetNet = poolEnd - startingCap;
   const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
   const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
   const fleetXR = totalStake > 0 ? totalWithdrawn / totalStake : 0;
   const totalDays = accounts.reduce((s, a) => s + (a.lifetime_days || 0), 0);
   const avgLife = accounts.length ? totalDays / accounts.length : 0;
-  const aggNetPerDay = totalDays > 0 ? totalNet / totalDays : 0;
+  const aggNetPerDay = totalDays > 0 ? fleetNet / totalDays : 0;
   const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
   tbody.innerHTML += `<tr class="totals-row">
     <td>FLEET</td>
     <td>${profitable}/${accounts.length} profit</td>
-    <td>${fmtMoney(totalStake)}</td>
+    <td>${fmtMoney(startingCap)}</td>
     <td>${fmtMoney(totalWithdrawn)}</td>
-    <td><span style="color:var(--${totalNet >= 0 ? "green" : "red"})">${totalNet >= 0 ? "+" : ""}${fmtMoney(totalNet)}</span></td>
-    <td><span style="color:var(--${fleetXR >= 1.0 ? "green" : "red"})">${fmtNum(fleetXR, 2)}x</span></td>
+    <td><span style="color:var(--${fleetNet >= 0 ? "green" : "red"})">${fleetNet >= 0 ? "+" : ""}${fmtMoney(fleetNet)}</span></td>
+    <td><span style="color:var(--${(poolEnd/startingCap) >= 1.0 ? "green" : "red"})">${fmtNum(poolEnd/startingCap, 2)}x</span></td>
     <td>${fmtNum(avgLife, 1)}d</td>
     <td><span style="color:var(--${aggNetPerDay >= 0 ? "green" : "red"})">${fmtMoney(aggNetPerDay)}</span></td>
   </tr>`;

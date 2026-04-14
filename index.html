@@ -73,28 +73,28 @@
         <div class="metric-value" id="hdr-experiment-id">—</div>
         <div class="metric-sub" id="hdr-fold-period">—</div>
       </div>
-      <div class="metric primary" id="fs-poolreturn">
+      <div class="metric primary" id="fs-poolreturn" title="pool_end / starting_capital. The real money: how much the pool grew after all deploys, withdrawals, and blowups.">
         <div class="metric-label">Pool Return</div>
         <div class="metric-value" id="hdr-poolreturn">—</div>
         <div class="metric-sub" id="hdr-poolreturn-sub">—</div>
       </div>
-      <div class="metric" id="fs-expectancy">
+      <div class="metric" id="fs-expectancy" title="(win_rate × avg_win) − (loss_rate × avg_loss). Expected net P&L per account deployment.">
         <div class="metric-label">Expectancy</div>
         <div class="metric-value" id="hdr-expectancy">—</div>
       </div>
-      <div class="metric" id="fs-profitfactor">
+      <div class="metric" id="fs-profitfactor" title="sum(positive net P&Ls) / sum(|negative net P&Ls|). Above 1.0 means winners outweigh losers in aggregate.">
         <div class="metric-label">Profit Factor</div>
         <div class="metric-value" id="hdr-profitfactor">—</div>
       </div>
-      <div class="metric" id="fs-extractionratio">
+      <div class="metric" id="fs-extractionratio" title="Mean of (withdrawn / stake) per account. How much each account extracts before dying. Above 1.0x means average account pays for itself.">
         <div class="metric-label">Extraction Ratio</div>
         <div class="metric-value" id="hdr-extractionratio">—</div>
       </div>
-      <div class="metric" id="fs-winrate">
+      <div class="metric" id="fs-winrate" title="Fraction of accounts with net P&L ≥ 0. An account is a 'win' if it extracted more than its stake before blowing up.">
         <div class="metric-label">Win Rate</div>
         <div class="metric-value" id="hdr-winrate">—</div>
       </div>
-      <div class="metric" id="fs-costs">
+      <div class="metric" id="fs-costs" title="(|commission| + |swap|) / total_withdrawn × 100. Transaction costs as a percentage of extracted profits.">
         <div class="metric-label">Costs %</div>
         <div class="metric-value" id="hdr-costs">—</div>
       </div>
@@ -108,15 +108,15 @@
       <div class="chart-header">
         <span class="chart-title">EURGBP (M15) · Accounts overlay</span>
         <span class="chart-legend">
-          <span class="leg-arrow green">&#9650;</span> profit
-          <span class="leg-arrow red">&#9650;</span> loss
-          <span class="leg-arrow gray">&#9650;</span> total loss
-          <span class="leg-arrow orange">&#9679;</span> recovery
+          <span class="leg-arrow green">&#9650;</span> deploy (profit)
+          <span class="leg-arrow gray">&#9650;</span> deploy (loss)
+          <span class="leg-arrow red">&#9660;</span> blowup
           &nbsp;|&nbsp;
-          <span class="leg-arrow green">―</span> buy grid
-          <span class="leg-arrow red">―</span> sell grid
-          <span class="leg-arrow cyan">―</span> TP close
-          <span class="leg-arrow gold">―</span> withdrawal
+          <span class="leg-arrow green">―</span> BUY entry
+          <span class="leg-arrow red">―</span> SELL entry
+          <span class="leg-arrow blue">―</span> BUY TP
+          <span class="leg-arrow purple">―</span> SELL TP
+          <span class="leg-arrow gold">&#9660;</span> withdrawal
         </span>
       </div>
       <div id="price-chart" class="chart"></div>
