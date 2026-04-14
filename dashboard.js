@@ -296,24 +296,29 @@ function renderAccountsTable(accounts) {
     return `<tr data-num="${a.num}">${tds}</tr>`;
   }).join("");
 
-  // Totals row — pure sum of per-account numbers, no pool logic
-  const totalNet = accounts.reduce((s, a) => s + (a.net || 0), 0);
-  const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
-  const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
-  const fleetXR = totalStake > 0 ? totalWithdrawn / totalStake : 0;
+  // Fleet summary row — pool-level story, not arithmetic sums.
+  // Accounts are sequential (same capital recycled), so summing stakes
+  // is misleading ($7K deployed ≠ $7K at risk — it was $5K recycled).
+  const b = state.currentBundle;
+  const m = b ? (b.metrics || {}) : {};
+  const startCap = b ? (b.starting_capital || m.bank_start || 5000) : 5000;
+  const poolEnd = m.bank_end ?? m.total_end ?? 0;
+  const poolNet = poolEnd - startCap;
+  const poolXR = startCap > 0 ? poolEnd / startCap : 0;
   const totalDays = accounts.reduce((s, a) => s + (a.lifetime_days || 0), 0);
   const avgLife = accounts.length ? totalDays / accounts.length : 0;
-  const aggNetPerDay = totalDays > 0 ? totalNet / totalDays : 0;
+  const calendarDays = m.total_calendar_days || 730;
+  const netPerDay = calendarDays > 0 ? poolNet / calendarDays : 0;
   const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
   tbody.innerHTML += `<tr class="totals-row">
-    <td>TOTAL</td>
+    <td>FLEET</td>
     <td>${profitable}/${accounts.length} profit</td>
-    <td>${fmtMoney(totalStake)}</td>
-    <td>${fmtMoney(totalWithdrawn)}</td>
-    <td><span style="color:var(--${totalNet >= 0 ? "green" : "red"})">${totalNet >= 0 ? "+" : ""}${fmtMoney(totalNet)}</span></td>
-    <td><span style="color:var(--${fleetXR >= 1.0 ? "green" : "red"})">${fmtNum(fleetXR, 2)}x</span></td>
+    <td>${fmtMoney(startCap)}</td>
+    <td>${fmtMoney(poolEnd)}</td>
+    <td><span style="color:var(--${poolNet >= 0 ? "green" : "red"})">${poolNet >= 0 ? "+" : ""}${fmtMoney(poolNet)}</span></td>
+    <td><span style="color:var(--${poolXR >= 1.0 ? "green" : "red"})">${fmtNum(poolXR, 2)}x</span></td>
     <td>${fmtNum(avgLife, 1)}d</td>
-    <td><span style="color:var(--${aggNetPerDay >= 0 ? "green" : "red"})">${fmtMoney(aggNetPerDay)}</span></td>
+    <td><span style="color:var(--${netPerDay >= 0 ? "green" : "red"})">${fmtMoney(netPerDay)}</span></td>
   </tr>`;
 
   // Click handlers — sort
