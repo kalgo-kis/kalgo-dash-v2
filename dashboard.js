@@ -716,10 +716,6 @@ function clearTraceOverlay() {
     state.bankChart.removeSeries(state.traceEquitySeries);
     state.traceEquitySeries = null;
   }
-  if (state.traceBalanceSeries) {
-    state.bankChart.removeSeries(state.traceBalanceSeries);
-    state.traceBalanceSeries = null;
-  }
   for (const s of (state.tracePositionLines || [])) {
     try { state.priceChart.removeSeries(s); } catch (e) {}
   }
@@ -884,12 +880,22 @@ function showTraceOverlay(a) {
       if (area > maxArea) { maxArea = area; lwcCanvas = c; }
     }
     let offsetX = 0, offsetY = 0;
+    let paneW = w, paneH = h;
     if (lwcCanvas) {
       const chartRect = chartDiv.getBoundingClientRect();
       const paneRect = lwcCanvas.getBoundingClientRect();
       offsetX = paneRect.left - chartRect.left;
       offsetY = paneRect.top - chartRect.top;
+      paneW = paneRect.width;
+      paneH = paneRect.height;
     }
+
+    // Clip drawing to chart pane bounds so ticks/lines don't bleed
+    // into the price scale or outside the visible area.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(offsetX, offsetY, paneW, paneH);
+    ctx.clip();
 
     // Draw dashed lines from entries to their TP close
     ctx.lineWidth = 1;
@@ -917,6 +923,8 @@ function showTraceOverlay(a) {
       ctx.fillStyle = tk.color;
       ctx.fillRect(x + offsetX - 4, y + offsetY - 1, 8, 2);
     }
+
+    ctx.restore(); // remove clip region
 
     state._traceAnimFrame = requestAnimationFrame(drawFrame);
   }
@@ -958,14 +966,11 @@ function showTraceOverlay(a) {
   state._buildTraceMarkers = buildTraceMarkers;
   applyMarkersForVisibleRange();
 
-  // Equity + balance curves on the bank chart
+  // Equity curve on the bank chart
   const eqSnaps = trace.equity_snapshots || [];
   if (eqSnaps.length > 0) {
     state.traceEquitySeries = state.bankChart.addLineSeries({
       color: "#f0883e", lineWidth: 2, lineType: 0, title: `Equity #${a.num}`,
-    });
-    state.traceBalanceSeries = state.bankChart.addLineSeries({
-      color: "#58a6ff", lineWidth: 1, lineType: 1, lineStyle: 2, title: `Balance #${a.num}`,
     });
     const dedup = (arr, key) => {
       const out = [];
@@ -981,7 +986,6 @@ function showTraceOverlay(a) {
       return out;
     };
     state.traceEquitySeries.setData(dedup(eqSnaps, "eq"));
-    state.traceBalanceSeries.setData(dedup(eqSnaps, "bal"));
   }
 }
 
