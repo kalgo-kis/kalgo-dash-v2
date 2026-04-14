@@ -890,12 +890,10 @@ function showTraceOverlay(a) {
       paneH = paneRect.height;
     }
 
-    // Clip drawing to chart pane bounds so ticks/lines don't bleed
-    // into the price scale or outside the visible area.
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(offsetX, offsetY, paneW, paneH);
-    ctx.clip();
+    // Bounds check: skip ticks/lines outside the chart pane
+    const inBounds = (px, py) =>
+      px >= offsetX && px <= offsetX + paneW &&
+      py >= offsetY && py <= offsetY + paneH;
 
     // Draw dashed lines from entries to their TP close
     ctx.lineWidth = 1;
@@ -906,10 +904,13 @@ function showTraceOverlay(a) {
       const x2 = ts.timeToCoordinate(ln.toT);
       const y2 = state.candleSeries.priceToCoordinate(ln.toV);
       if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
+      const px1 = x1 + offsetX, py1 = y1 + offsetY;
+      const px2 = x2 + offsetX, py2 = y2 + offsetY;
+      if (!inBounds(px1, py1) && !inBounds(px2, py2)) continue;
       ctx.strokeStyle = ln.color;
       ctx.beginPath();
-      ctx.moveTo(x1 + offsetX, y1 + offsetY);
-      ctx.lineTo(x2 + offsetX, y2 + offsetY);
+      ctx.moveTo(px1, py1);
+      ctx.lineTo(px2, py2);
       ctx.stroke();
     }
     ctx.setLineDash([]);
@@ -920,11 +921,11 @@ function showTraceOverlay(a) {
       if (x === null) continue;
       const y = state.candleSeries.priceToCoordinate(tk.v);
       if (y === null) continue;
+      const px = x + offsetX, py = y + offsetY;
+      if (!inBounds(px, py)) continue;
       ctx.fillStyle = tk.color;
-      ctx.fillRect(x + offsetX - 4, y + offsetY - 1, 8, 2);
+      ctx.fillRect(px - 4, py - 1, 8, 2);
     }
-
-    ctx.restore(); // remove clip region
 
     state._traceAnimFrame = requestAnimationFrame(drawFrame);
   }
