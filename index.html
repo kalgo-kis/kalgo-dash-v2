@@ -74,10 +74,10 @@
         <div class="metric-sub" id="hdr-fold-period">—</div>
       </div>
       <div class="metric primary has-tip" id="fs-poolreturn">
-        <div class="metric-label">Pool Return</div>
+        <div class="metric-label">Investor Return</div>
         <div class="metric-value" id="hdr-poolreturn">—</div>
         <div class="metric-sub" id="hdr-poolreturn-sub">—</div>
-        <div class="metric-tip">pool_end / starting_capital. The real money: how much the pool grew after all deploys, withdrawals, and blowups.</div>
+        <div class="metric-tip">total_distributed / total_called. How much the investor got back for every dollar actually called. Above 1.0x = profitable.</div>
       </div>
       <div class="metric has-tip" id="fs-expectancy">
         <div class="metric-label">Expectancy</div>
@@ -90,9 +90,9 @@
         <div class="metric-tip">sum(positive net P&amp;Ls) / sum(|negative net P&amp;Ls|). Above 1.0 means winners outweigh losers in aggregate.</div>
       </div>
       <div class="metric has-tip" id="fs-extractionratio">
-        <div class="metric-label">Extraction Ratio</div>
+        <div class="metric-label">Capital Efficiency</div>
         <div class="metric-value" id="hdr-extractionratio">—</div>
-        <div class="metric-tip">Mean of (withdrawn / stake) per account. How much each account extracts before dying. Above 1.0x means average account pays for itself.</div>
+        <div class="metric-tip">total_called / committed. What percentage of the investor's commitment was actually needed. Lower = more capital-efficient (the fleet funded itself sooner).</div>
       </div>
       <div class="metric has-tip" id="fs-winrate">
         <div class="metric-label">Win Rate</div>
@@ -131,7 +131,7 @@
 
     <section class="chart-section">
       <div class="chart-header">
-        <span class="chart-title">Fleet Pool Balance</span>
+        <span class="chart-title">Investor Economics</span>
       </div>
       <div id="bank-chart" class="chart tall"></div>
     </section>

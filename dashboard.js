@@ -158,18 +158,26 @@ function renderBundle(b) {
   document.getElementById("hdr-fold-period").textContent = `${b.fold} · ${b.eval_start}..${b.eval_end}`;
   document.getElementById("data-warning-card").style.display = "none";
 
-  // Compute fleet metrics from account data
+  // Compute fleet metrics — uses investor economics (computed in renderAccountsTable)
   const startingCap = b.starting_capital || m.bank_start || 5000;
-  const poolEnd = m.bank_end ?? m.total_end ?? 0;
   const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
-  const totalStake = accounts.reduce((s, a) => s + (a.stake || 0), 0);
+  const econ = state._investorEcon;
 
-  // Pool Return: pool_end / pool_start as X.XXx
-  const poolReturn = startingCap > 0 ? poolEnd / startingCap : 0;
-  const prEl = document.getElementById("hdr-poolreturn");
-  prEl.textContent = fmtNum(poolReturn, 2) + "x";
-  prEl.className = "metric-value " + (poolReturn >= 1.0 ? "green" : "red");
-  document.getElementById("hdr-poolreturn-sub").textContent = `${fmtMoney(startingCap)} \u2192 ${fmtMoney(poolEnd)}`;
+  // Investor Return: total_distributed / total_called
+  if (econ) {
+    const invReturn = econ.totals.returnOnCalled;
+    const prEl = document.getElementById("hdr-poolreturn");
+    prEl.textContent = fmtNum(invReturn, 2) + "x";
+    prEl.className = "metric-value " + (invReturn >= 1.0 ? "green" : "red");
+    document.getElementById("hdr-poolreturn-sub").textContent =
+      `${fmtMoney(econ.totals.totalCalled)} called \u2192 ${fmtMoney(econ.totals.totalDistributed)} returned`;
+
+    // Capital Efficiency: % of commitment actually called
+    const capEff = econ.totals.capitalEfficiency;
+    const xrEl = document.getElementById("hdr-extractionratio");
+    xrEl.textContent = fmtNum(capEff * 100, 0) + "%";
+    xrEl.className = "metric-value " + (capEff < 1.0 ? "green" : "text");
+  }
 
   // Win/loss stats
   const winners = accounts.filter(a => (a.net || 0) >= 0);
@@ -193,13 +201,6 @@ function renderBundle(b) {
   pfEl.textContent = profitFactor === Infinity ? "\u221E" : fmtNum(profitFactor, 2);
   pfEl.className = "metric-value " + (profitFactor > 1.0 ? "green" : "red");
 
-  // Extraction Ratio: mean(withdrawn_i / stake_i)
-  const xrs = accounts.filter(a => (a.stake || 0) > 0).map(a => (a.withdrawn || 0) / a.stake);
-  const meanXR = xrs.length ? xrs.reduce((s, v) => s + v, 0) / xrs.length : 0;
-  const xrEl = document.getElementById("hdr-extractionratio");
-  xrEl.textContent = fmtNum(meanXR, 2) + "x";
-  xrEl.className = "metric-value " + (meanXR > 1.0 ? "green" : "red");
-
   // Win Rate: N/M (XX%)
   document.getElementById("hdr-winrate").textContent = `${winners.length}/${accounts.length} (${fmtNum(winRate * 100, 0)}%)`;
 
@@ -209,14 +210,14 @@ function renderBundle(b) {
   const costsPct = totalWithdrawn > 0 ? (Math.abs(totalComm) + Math.abs(totalSwap)) / totalWithdrawn * 100 : 0;
   document.getElementById("hdr-costs").textContent = fmtNum(costsPct, 1) + "%";
 
+  // accounts table (must run before charts — computes investor economics)
+  renderAccountsTable(accounts);
+
   // charts
   clearCharts();
   setupCharts();
   populatePriceChart(b);
   populateBankChart(b);
-
-  // accounts table
-  renderAccountsTable(accounts);
 
   // experiment config panel
   renderConfigPanel(b);
@@ -247,47 +248,113 @@ function renderConfigPanel(b) {
   };
 }
 
+// ----- investor economics -----
+
+/**
+ * Compute investor economics from account records.
+ *
+ * Model: investor commits capital, funds accounts on demand ($stake each).
+ * Withdrawals return to operating cash. Excess above next stake is
+ * distributed back to investor. Final account returns all cash.
+ *
+ * Returns { accounts: [...enriched], totals: {...} }
+ */
+function computeInvestorEconomics(accounts, startingCapital, stakePerAccount) {
+  const ordered = [...accounts].sort((a, b) => (a.deploy_time || 0) - (b.deploy_time || 0));
+  const stake = stakePerAccount || (ordered[0]?.stake || 1000);
+
+  let operatingCash = 0;
+  let totalCalled = 0;
+  let totalDistributed = 0;
+  let remainingCommitment = startingCapital;
+
+  const enriched = ordered.map((a, i) => {
+    const acctStake = a.stake || stake;
+    const extracted = a.withdrawn || 0;
+    const net = a.net || 0;
+    const residual = net - extracted + acctStake; // net = extracted - stake + residual
+
+    // Capital call: how much new investor money needed?
+    const shortfall = Math.max(0, acctStake - operatingCash);
+    const capitalCall = Math.min(shortfall, remainingCommitment);
+    totalCalled += capitalCall;
+    remainingCommitment -= capitalCall;
+
+    // Deploy
+    operatingCash = operatingCash + capitalCall - acctStake;
+
+    // During life: extractions return to operating cash
+    operatingCash += extracted;
+
+    // On close: residual returns
+    operatingCash += Math.max(0, residual);
+
+    // Distribution: excess above next stake, or all if last account
+    const isLast = (i === ordered.length - 1);
+    const distribution = isLast ? operatingCash : Math.max(0, operatingCash - acctStake);
+    totalDistributed += distribution;
+    operatingCash -= distribution;
+
+    return {
+      ...a,
+      capitalCall: Math.round(capitalCall * 100) / 100,
+      distribution: Math.round(distribution * 100) / 100,
+      cashAfter: Math.round(operatingCash * 100) / 100,
+    };
+  });
+
+  return {
+    accounts: enriched,
+    totals: {
+      committed: startingCapital,
+      totalCalled: Math.round(totalCalled * 100) / 100,
+      totalDistributed: Math.round(totalDistributed * 100) / 100,
+      investorProfit: Math.round((totalDistributed - totalCalled) * 100) / 100,
+      returnOnCalled: totalCalled > 0 ? totalDistributed / totalCalled : 0,
+      capitalEfficiency: startingCapital > 0 ? totalCalled / startingCapital : 0,
+      unusedCommitment: Math.round(remainingCommitment * 100) / 100,
+    },
+  };
+}
+
 // ----- accounts table -----
 state._tableSortCol = "num";
 state._tableSortAsc = true;
 
 function renderAccountsTable(accounts) {
+  const b = state.currentBundle;
+  const m = b ? (b.metrics || {}) : {};
+  const startCap = b ? (b.starting_capital || m.bank_start || 5000) : 5000;
+  const stakePerAcct = m.stake_per_account || (accounts[0]?.stake || 1000);
+
+  // Compute investor economics
+  const econ = computeInvestorEconomics(accounts, startCap, stakePerAcct);
+  state._investorEcon = econ; // store for chart use
+
   const colDefs = {
-    num:       { label: "#",          tip: "Account number (deploy order)" },
-    outcome:   { label: "Outcome",    tip: "How the account ended — blowup (margin stop-out) or survived to end of evaluation period" },
-    stake:     { label: "Stake",      tip: "Capital deployed from the pool into this account" },
-    withdrawn: { label: "Extracted",  tip: "Total withdrawn from this account back to the pool during its lifetime" },
-    net:       { label: "Net P&L",    tip: "extracted − stake + residual returned at close. Positive = account paid for itself before dying" },
-    cumulPnl:  { label: "Cumul. P&L", tip: "Running total of Net P&L across all accounts in deploy order. Shows whether the fleet is ahead or behind at each point. Equals pool − starting capital" },
-    lifetime_days: { label: "Life",   tip: "Account lifetime in days from deploy to close" },
-    netperday: { label: "Net $/Day",  tip: "Net P&L ÷ lifetime days. Daily profit rate for this account" },
+    num:         { label: "#",            tip: "Account number (deploy order)" },
+    outcome:     { label: "Outcome",      tip: "How the account ended — blowup (margin stop-out) or survived to end of evaluation period" },
+    stake:       { label: "Stake",        tip: "Capital deployed into this account" },
+    net:         { label: "Net P&L",      tip: "Extracted + residual − stake. Positive = account paid for itself" },
+    capitalCall: { label: "Cap. Call",     tip: "New money requested from investor for this deployment. Zero when operating cash covers the stake (self-funding)" },
+    distribution:{ label: "Distribution", tip: "Cash returned to investor after account closes. Excess above next stake is distributed; final account returns all remaining cash" },
+    cashAfter:   { label: "Cash",         tip: "Operating cash available after this account closes. Must cover next stake or a capital call is needed" },
+    lifetime_days:{ label: "Life",        tip: "Account lifetime in days from deploy to close" },
   };
+  const pnlFmt = v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>`;
   const cols = [
-    { key: "num",       fmt: v => v },
-    { key: "outcome",   fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
-    { key: "stake",     fmt: fmtMoney },
-    { key: "withdrawn", fmt: fmtMoney },
-    { key: "net",       fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>` },
-    { key: "cumulPnl",  fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>` },
-    { key: "lifetime_days", fmt: v => fmtNum(v, 1) + "d" },
-    { key: "netperday", fmt: v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${fmtMoney(v)}</span>` },
+    { key: "num",          fmt: v => v },
+    { key: "outcome",      fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
+    { key: "stake",        fmt: fmtMoney },
+    { key: "net",          fmt: pnlFmt },
+    { key: "capitalCall",  fmt: v => v > 0 ? `<span style="color:var(--red)">${fmtMoney(v)}</span>` : `<span style="color:var(--text-muted)">—</span>` },
+    { key: "distribution", fmt: v => v > 0 ? `<span style="color:var(--green)">${fmtMoney(v)}</span>` : `<span style="color:var(--text-muted)">—</span>` },
+    { key: "cashAfter",    fmt: fmtMoney },
+    { key: "lifetime_days",fmt: v => fmtNum(v, 1) + "d" },
   ];
 
-  // Compute derived fields per account.
-  // Cumulative P&L must be computed in deploy order BEFORE sorting.
-  const deployOrder = [...accounts].sort((a, b) => (a.deploy_time || 0) - (b.deploy_time || 0));
-  const cumulMap = {};
-  let running = 0;
-  for (const a of deployOrder) {
-    running += (a.net || 0);
-    cumulMap[a.num] = running;
-  }
-
-  const rows = accounts.map(a => ({
-    ...a,
-    cumulPnl: cumulMap[a.num] || 0,
-    netperday: (a.lifetime_days && a.lifetime_days > 0) ? (a.net || 0) / a.lifetime_days : 0,
-  }));
+  // Use enriched accounts from investor economics (already in deploy order)
+  const rows = [...econ.accounts];
 
   // Sort
   const sortKey = state._tableSortCol;
@@ -318,29 +385,19 @@ function renderAccountsTable(accounts) {
     return `<tr data-num="${a.num}">${tds}</tr>`;
   }).join("");
 
-  // Fleet summary row — pool-level story, not arithmetic sums.
-  // Accounts are sequential (same capital recycled), so summing stakes
-  // is misleading ($7K deployed ≠ $7K at risk — it was $5K recycled).
-  const b = state.currentBundle;
-  const m = b ? (b.metrics || {}) : {};
-  const startCap = b ? (b.starting_capital || m.bank_start || 5000) : 5000;
-  const poolEnd = m.bank_end ?? m.total_end ?? 0;
-  const poolNet = poolEnd - startCap;
-  const poolXR = startCap > 0 ? poolEnd / startCap : 0;
-  const totalDays = accounts.reduce((s, a) => s + (a.lifetime_days || 0), 0);
-  const avgLife = accounts.length ? totalDays / accounts.length : 0;
-  const calendarDays = m.total_calendar_days || 730;
-  const netPerDay = calendarDays > 0 ? poolNet / calendarDays : 0;
+  // Fleet summary row — investor-level totals
+  const t = econ.totals;
   const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
+  const calendarDays = m.total_calendar_days || 730;
   tbody.innerHTML += `<tr class="totals-row">
     <td>FLEET</td>
     <td>${profitable}/${accounts.length} profit</td>
-    <td>${fmtMoney(startCap)}</td>
-    <td>${fmtMoney(poolEnd)}</td>
-    <td><span style="color:var(--${poolNet >= 0 ? "green" : "red"})">${poolNet >= 0 ? "+" : ""}${fmtMoney(poolNet)}</span></td>
-    <td><span style="color:var(--${poolNet >= 0 ? "green" : "red"})">${poolNet >= 0 ? "+" : ""}${fmtMoney(poolNet)}</span></td>
-    <td>${fmtNum(avgLife, 1)}d</td>
-    <td><span style="color:var(--${netPerDay >= 0 ? "green" : "red"})">${fmtMoney(netPerDay)}</span></td>
+    <td title="Investor committed ${fmtMoney(t.committed)}">\u2014</td>
+    <td>${pnlFmt(t.investorProfit)}</td>
+    <td title="Total new capital called from investor"><span style="color:var(--red)">${fmtMoney(t.totalCalled)}</span></td>
+    <td title="Total cash returned to investor"><span style="color:var(--green)">${fmtMoney(t.totalDistributed)}</span></td>
+    <td title="Return on called capital: ${fmtNum(t.returnOnCalled, 2)}x">\u2014</td>
+    <td>${calendarDays}d</td>
   </tr>`;
 
   // Click handlers — sort
@@ -427,25 +484,21 @@ function setupCharts() {
     // "stock" format hides everything below 0.01 which is useless for forex.
     priceFormat: { type: "price", precision: 5, minMove: 0.00001 },
   });
-  // Bank chart — pool balance (cyan step line) + starting capital reference (gray dashed).
-  // bank_curve[].bank is actually the POOL balance (mapped from v3 pool_curve).
+  // Bank chart — operating cash (cyan) + investor exposure (orange dashed).
   state.bankSeries = state.bankChart.addLineSeries({
     color: COLORS.cyan, lineWidth: 2,
     lineType: 1,
-    title: "Pool Balance",
+    title: "Operating Cash",
   });
   state.capitalLine = state.bankChart.addLineSeries({
     color: COLORS.gray, lineWidth: 1, lineStyle: 2, // dashed
-    title: "Starting capital",
+    title: "Stake Level",
   });
   state.hwmSeries = state.bankChart.addLineSeries({
-    color: COLORS.gray, lineWidth: 1, lineStyle: 1, // dotted
-    title: "High-Water Mark",
+    color: "#f0883e", lineWidth: 2, lineStyle: 2, // orange dashed
+    title: "Investor Exposure",
     crosshairMarkerVisible: false,
   });
-  // Keep savingsSeries as null — trace overlay adds equity/balance as needed.
-  // The marker LOD code references savingsSeries for bank markers, so point it
-  // at bankSeries instead.
   state.savingsSeries = state.bankSeries;
   state.totalSeries = null;
   state.bankChart.priceScale("right").applyOptions({
@@ -655,81 +708,122 @@ function populatePriceChart(b) {
 
 function populateBankChart(b) {
   const firstCandle = b.candles_m15?.[0]?.t;
-  // Shared transform: convert {time, <valueKey>} to {time, value}, clamp times
-  // before the first candle, sort, and dedupe same-time points.
-  function prep(series, key) {
-    const list = (series || []).map(p => ({
-      time: toUnix(p.time),
-      value: p[key],
-    })).filter(p => p.time != null && p.value != null).map(p => {
-      if (firstCandle != null && p.time < firstCandle) p.time = firstCandle;
-      return p;
-    }).sort((a, b) => a.time - b.time);
+  const econ = state._investorEcon;
+  if (!econ) return;
+
+  const stakePerAcct = b.metrics?.stake_per_account || (b.accounts[0]?.stake || 1000);
+
+  // Build operating cash timeline and investor exposure from account events.
+  // Each account creates data points at deploy and close times.
+  const cashPoints = [];
+  const exposurePoints = [];
+  let cumulCalled = 0;
+  let cumulDistributed = 0;
+
+  // Starting point: cash = 0, exposure = 0
+  const startT = firstCandle || (econ.accounts[0]?.deploy_time);
+  if (startT) {
+    cashPoints.push({ time: startT, value: 0 });
+    exposurePoints.push({ time: startT, value: 0 });
+  }
+
+  for (const a of econ.accounts) {
+    const deployT = toUnix(a.deploy_time);
+    const closeT = toUnix(a.blowup_time) || toUnix(a.deploy_time) + (a.lifetime_days || 1) * 86400;
+
+    if (deployT) {
+      // At deploy: capital call happens, then stake is deployed
+      cumulCalled += a.capitalCall;
+      const cashBeforeDeploy = (a.capitalCall > 0 ? a.capitalCall : 0) +
+        (cashPoints.length > 0 ? cashPoints[cashPoints.length - 1].value : 0);
+      // Cash drops by stake on deploy
+      cashPoints.push({ time: deployT, value: Math.round((cashBeforeDeploy - stakePerAcct) * 100) / 100 });
+      exposurePoints.push({ time: deployT, value: Math.round((cumulCalled - cumulDistributed) * 100) / 100 });
+    }
+    if (closeT && closeT > (deployT || 0)) {
+      // At close: extractions + residual returned, then distribution to investor
+      const cashAtClose = a.cashAfter + a.distribution; // before distribution
+      cumulDistributed += a.distribution;
+      // Cash after distribution
+      cashPoints.push({ time: closeT, value: a.cashAfter });
+      exposurePoints.push({ time: closeT, value: Math.round((cumulCalled - cumulDistributed) * 100) / 100 });
+    }
+  }
+
+  // Extend to end of eval period
+  const candles = b.candles_m15 || [];
+  const rangeEnd = candles.length ? candles[candles.length - 1].t : null;
+  if (rangeEnd && cashPoints.length > 0) {
+    const lastCash = cashPoints[cashPoints.length - 1];
+    if (rangeEnd > lastCash.time) {
+      cashPoints.push({ time: rangeEnd, value: lastCash.value });
+      const lastExp = exposurePoints[exposurePoints.length - 1];
+      exposurePoints.push({ time: rangeEnd, value: lastExp.value });
+    }
+  }
+
+  // Dedupe same-time points (keep last)
+  function dedupe(arr) {
     const out = [];
-    let last = null;
-    for (const p of list) {
-      if (p.time === last) out[out.length - 1] = p;
+    for (const p of arr) {
+      if (out.length > 0 && out[out.length - 1].time === p.time) out[out.length - 1] = p;
       else out.push(p);
-      last = p.time;
     }
     return out;
   }
 
-  // bank_curve[].bank is actually the POOL balance (mapped from v3 pool_curve)
-  const poolData = prep(b.bank_curve, "bank");
-  state.bankSeries.setData(poolData);
+  state.bankSeries.setData(dedupe(cashPoints));
 
-  // High-water mark line: running max of pool_curve values
-  if (state.hwmSeries && poolData.length > 0) {
-    let runMax = -Infinity;
-    const hwmData = poolData.map(p => {
-      runMax = Math.max(runMax, p.value);
-      return { time: p.time, value: runMax };
-    });
-    state.hwmSeries.setData(hwmData);
+  // Investor exposure line
+  if (state.hwmSeries) {
+    state.hwmSeries.setData(dedupe(exposurePoints));
   }
 
-  // Event markers on the pool curve: green at deploy, red at blowup
+  // Stake level reference line (shows the threshold for self-funding)
+  const rangeStart = candles.length ? candles[0].t : (cashPoints[0]?.time);
+  if (rangeStart != null && rangeEnd != null && rangeStart < rangeEnd) {
+    state.capitalLine.setData([
+      { time: rangeStart, value: stakePerAcct },
+      { time: rangeEnd,   value: stakePerAcct },
+    ]);
+  }
+
+  // Event markers: capital calls (red ▼) and distributions (green ▲)
   const bankMarkers = [];
-  for (const a of b.accounts) {
+  for (const a of econ.accounts) {
     const deployT = toUnix(a.deploy_time);
-    if (deployT != null) {
-      bankMarkers.push({
-        time: deployT,
-        position: "belowBar",
-        color: COLORS.green,
-        shape: "arrowUp",
-        text: `#${a.num}`,
-        _kind: "deploy",
-      });
+    const closeT = toUnix(a.blowup_time);
+
+    if (deployT) {
+      if (a.capitalCall > 0) {
+        bankMarkers.push({
+          time: deployT, position: "aboveBar", color: COLORS.red,
+          shape: "arrowDown", text: `call $${Math.round(a.capitalCall)}`,
+          _kind: "deploy",
+        });
+      } else {
+        bankMarkers.push({
+          time: deployT, position: "belowBar", color: COLORS.cyan,
+          shape: "arrowUp", text: `#${a.num}`,
+          _kind: "deploy",
+        });
+      }
     }
-    const blowupT = toUnix(a.blowup_time);
-    if (blowupT != null && a.blowup) {
-      bankMarkers.push({
-        time: blowupT,
-        position: "aboveBar",
-        color: COLORS.red,
-        shape: "arrowDown",
-        text: `\u00D7${a.num}`,
-        _kind: "blowup",
-      });
+    if (a.distribution > 0) {
+      const distT = closeT || deployT;
+      if (distT) {
+        bankMarkers.push({
+          time: distT, position: "belowBar", color: COLORS.green,
+          shape: "arrowUp", text: `dist $${Math.round(a.distribution)}`,
+          _kind: "blowup",
+        });
+      }
     }
   }
   bankMarkers.sort((x, y) => x.time - y.time);
   state.fullBankMarkers = bankMarkers;
   state.bankSeries.setMarkers(cullBankMarkers(bankMarkers, 80).map(stripInternal));
 
-  // Starting-capital reference line spanning full price-chart time range
-  const candles = b.candles_m15 || [];
-  const rangeStart = candles.length ? candles[0].t : (poolData[0]?.time);
-  const rangeEnd   = candles.length ? candles[candles.length - 1].t : (poolData[poolData.length - 1]?.time);
-  if (rangeStart != null && rangeEnd != null && rangeStart < rangeEnd) {
-    const cap = b.starting_capital || 5000;
-    state.capitalLine.setData([
-      { time: rangeStart, value: cap },
-      { time: rangeEnd,   value: cap },
-    ]);
-  }
   state.bankChart.timeScale().fitContent();
 }
 
