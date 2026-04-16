@@ -484,20 +484,34 @@ function setupCharts() {
     // "stock" format hides everything below 0.01 which is useless for forex.
     priceFormat: { type: "price", precision: 5, minMove: 0.00001 },
   });
-  // Bank chart — operating cash (cyan) + investor exposure (orange dashed).
-  state.bankSeries = state.bankChart.addLineSeries({
-    color: COLORS.cyan, lineWidth: 2,
-    lineType: 1,
-    title: "Operating Cash",
+  // Bank chart — single Investor Net P&L line (green above 0, red below).
+  // BaselineSeries auto-fills above/below the baseline value with different colors.
+  state.bankSeries = state.bankChart.addBaselineSeries({
+    baseValue: { type: "price", price: 0 },
+    topLineColor: COLORS.green,
+    topFillColor1: "rgba(63, 185, 80, 0.28)",
+    topFillColor2: "rgba(63, 185, 80, 0.05)",
+    bottomLineColor: COLORS.red,
+    bottomFillColor1: "rgba(248, 81, 73, 0.05)",
+    bottomFillColor2: "rgba(248, 81, 73, 0.28)",
+    lineWidth: 2,
+    title: "Investor Net P&L",
   });
+  // Break-even reference line at $0
   state.capitalLine = state.bankChart.addLineSeries({
-    color: COLORS.gray, lineWidth: 1, lineStyle: 2, // dashed
-    title: "Stake Level",
-  });
-  state.hwmSeries = state.bankChart.addLineSeries({
-    color: "#f0883e", lineWidth: 2, lineStyle: 2, // orange dashed
-    title: "Investor Exposure",
+    color: COLORS.gray, lineWidth: 1, lineStyle: 2,
+    title: "Break-even",
     crosshairMarkerVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false,
+  });
+  // Peak-exposure reference (horizontal dashed line at min(net P&L) — the deepest underwater point)
+  state.hwmSeries = state.bankChart.addLineSeries({
+    color: COLORS.gray, lineWidth: 1, lineStyle: 1,
+    title: "Peak Loss",
+    crosshairMarkerVisible: false,
+    lastValueVisible: false,
+    priceLineVisible: false,
   });
   state.savingsSeries = state.bankSeries;
   state.totalSeries = null;
@@ -711,80 +725,73 @@ function populateBankChart(b) {
   const econ = state._investorEcon;
   if (!econ) return;
 
-  const stakePerAcct = b.metrics?.stake_per_account || (b.accounts[0]?.stake || 1000);
-
-  // Build operating cash timeline and investor exposure from account events.
-  // Each account creates data points at deploy and close times.
-  const cashPoints = [];
-  const exposurePoints = [];
+  // Build investor net P&L timeline: cumulative_distributed − cumulative_called
+  // Step function — jumps down on capital calls (more $ owed to investor),
+  // jumps up on distributions (investor gets paid back).
+  const netPnlPoints = [];
   let cumulCalled = 0;
   let cumulDistributed = 0;
 
-  // Starting point: cash = 0, exposure = 0
-  const startT = firstCandle || (econ.accounts[0]?.deploy_time);
+  const startT = firstCandle || toUnix(econ.accounts[0]?.deploy_time);
   if (startT) {
-    cashPoints.push({ time: startT, value: 0 });
-    exposurePoints.push({ time: startT, value: 0 });
+    netPnlPoints.push({ time: startT, value: 0 });
   }
 
   for (const a of econ.accounts) {
     const deployT = toUnix(a.deploy_time);
-    const closeT = toUnix(a.blowup_time) || toUnix(a.deploy_time) + (a.lifetime_days || 1) * 86400;
+    const closeT = toUnix(a.blowup_time) || (toUnix(a.deploy_time) + (a.lifetime_days || 1) * 86400);
 
-    if (deployT) {
-      // At deploy: capital call happens, then stake is deployed
+    // At deploy: capital call (if any) deepens the underwater position
+    if (deployT && a.capitalCall > 0) {
       cumulCalled += a.capitalCall;
-      const cashBeforeDeploy = (a.capitalCall > 0 ? a.capitalCall : 0) +
-        (cashPoints.length > 0 ? cashPoints[cashPoints.length - 1].value : 0);
-      // Cash drops by stake on deploy
-      cashPoints.push({ time: deployT, value: Math.round((cashBeforeDeploy - stakePerAcct) * 100) / 100 });
-      exposurePoints.push({ time: deployT, value: Math.round((cumulCalled - cumulDistributed) * 100) / 100 });
+      netPnlPoints.push({
+        time: deployT,
+        value: Math.round((cumulDistributed - cumulCalled) * 100) / 100,
+      });
     }
-    if (closeT && closeT > (deployT || 0)) {
-      // At close: extractions + residual returned, then distribution to investor
-      const cashAtClose = a.cashAfter + a.distribution; // before distribution
+    // At close: distribution (if any) brings investor back toward break-even
+    if (closeT && a.distribution > 0) {
       cumulDistributed += a.distribution;
-      // Cash after distribution
-      cashPoints.push({ time: closeT, value: a.cashAfter });
-      exposurePoints.push({ time: closeT, value: Math.round((cumulCalled - cumulDistributed) * 100) / 100 });
+      netPnlPoints.push({
+        time: closeT,
+        value: Math.round((cumulDistributed - cumulCalled) * 100) / 100,
+      });
     }
   }
 
-  // Extend to end of eval period
+  // Extend flat line to end of eval
   const candles = b.candles_m15 || [];
   const rangeEnd = candles.length ? candles[candles.length - 1].t : null;
-  if (rangeEnd && cashPoints.length > 0) {
-    const lastCash = cashPoints[cashPoints.length - 1];
-    if (rangeEnd > lastCash.time) {
-      cashPoints.push({ time: rangeEnd, value: lastCash.value });
-      const lastExp = exposurePoints[exposurePoints.length - 1];
-      exposurePoints.push({ time: rangeEnd, value: lastExp.value });
+  if (rangeEnd && netPnlPoints.length > 0) {
+    const last = netPnlPoints[netPnlPoints.length - 1];
+    if (rangeEnd > last.time) {
+      netPnlPoints.push({ time: rangeEnd, value: last.value });
     }
   }
 
-  // Dedupe same-time points (keep last)
-  function dedupe(arr) {
-    const out = [];
-    for (const p of arr) {
-      if (out.length > 0 && out[out.length - 1].time === p.time) out[out.length - 1] = p;
-      else out.push(p);
-    }
-    return out;
-  }
+  // Dedupe same-time points (keep last — the resulting state)
+  const seen = new Map();
+  for (const p of netPnlPoints) seen.set(p.time, p.value);
+  const cleanPnl = [...seen.entries()].sort((a, b) => a[0] - b[0])
+    .map(([time, value]) => ({ time, value }));
 
-  state.bankSeries.setData(dedupe(cashPoints));
+  state.bankSeries.setData(cleanPnl);
 
-  // Investor exposure line
-  if (state.hwmSeries) {
-    state.hwmSeries.setData(dedupe(exposurePoints));
-  }
-
-  // Stake level reference line (shows the threshold for self-funding)
-  const rangeStart = candles.length ? candles[0].t : (cashPoints[0]?.time);
+  // Break-even reference at $0
+  const rangeStart = candles.length ? candles[0].t : (cleanPnl[0]?.time);
   if (rangeStart != null && rangeEnd != null && rangeStart < rangeEnd) {
     state.capitalLine.setData([
-      { time: rangeStart, value: stakePerAcct },
-      { time: rangeEnd,   value: stakePerAcct },
+      { time: rangeStart, value: 0 },
+      { time: rangeEnd,   value: 0 },
+    ]);
+  }
+
+  // Peak-loss reference: horizontal line at the deepest underwater point
+  const minPnl = Math.min(...cleanPnl.map(p => p.value));
+  if (state.hwmSeries && minPnl < 0 && rangeStart != null && rangeEnd != null) {
+    state.hwmSeries.setData([
+      { time: rangeStart, value: minPnl },
+      { time: rangeEnd,   value: minPnl },
     ]);
   }
 
@@ -794,20 +801,12 @@ function populateBankChart(b) {
     const deployT = toUnix(a.deploy_time);
     const closeT = toUnix(a.blowup_time);
 
-    if (deployT) {
-      if (a.capitalCall > 0) {
-        bankMarkers.push({
-          time: deployT, position: "aboveBar", color: COLORS.red,
-          shape: "arrowDown", text: `call $${Math.round(a.capitalCall)}`,
-          _kind: "deploy",
-        });
-      } else {
-        bankMarkers.push({
-          time: deployT, position: "belowBar", color: COLORS.cyan,
-          shape: "arrowUp", text: `#${a.num}`,
-          _kind: "deploy",
-        });
-      }
+    if (deployT && a.capitalCall > 0) {
+      bankMarkers.push({
+        time: deployT, position: "aboveBar", color: COLORS.red,
+        shape: "arrowDown", text: `call $${Math.round(a.capitalCall)}`,
+        _kind: "deploy",
+      });
     }
     if (a.distribution > 0) {
       const distT = closeT || deployT;
