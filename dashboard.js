@@ -230,9 +230,13 @@ function renderBundle(b) {
 }
 
 function renderConfigPanel(b) {
-  const policySource = b.policy_source || "";
   const configEl = document.getElementById("config-params");
-  if (policySource) {
+  const cfg = b.policy_config;
+  const policySource = b.policy_source || "";
+
+  if (cfg && typeof cfg === "object") {
+    configEl.innerHTML = renderStructuredConfig(cfg);
+  } else if (policySource) {
     configEl.innerHTML = `<pre>${policySource}</pre>`;
   } else {
     configEl.innerHTML = `<div class="placeholder">No configuration data embedded in this experiment.</div>`;
@@ -244,10 +248,71 @@ function renderConfigPanel(b) {
   const savedNotes = localStorage.getItem(notesKey) || "";
   const notesEl = document.getElementById("experiment-notes");
   notesEl.value = savedNotes;
-  // Auto-save on input
   notesEl.oninput = () => {
     localStorage.setItem(notesKey, notesEl.value);
   };
+}
+
+// Section ordering and human-readable titles for the structured config panel
+const CONFIG_SECTIONS = [
+  ["strategy",       "Strategy"],
+  ["grid",           "Grid"],
+  ["risk",           "Risk & Sizing"],
+  ["withdrawal",     "Withdrawal"],
+  ["recovery",       "Recovery"],
+  ["filters",        "Filters"],
+  ["adaptive_tools", "Adaptive Tools"],
+  ["realism",        "Execution Realism"],
+];
+
+// Pretty-print a snake_case key as Title Case
+function humanizeKey(k) {
+  return String(k).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// Format any value for display
+function formatConfigValue(v) {
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "boolean") return v ? "ON" : "OFF";
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/\.?0+$/, "");
+  if (Array.isArray(v)) return v.map(formatConfigValue).join(", ");
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function renderStructuredConfig(cfg) {
+  const sectionOrder = new Map(CONFIG_SECTIONS);
+  const knownKeys = new Set(sectionOrder.keys());
+  // Place known sections first, then any extras
+  const allSections = [
+    ...CONFIG_SECTIONS.filter(([k]) => cfg[k]),
+    ...Object.keys(cfg).filter(k => !knownKeys.has(k) && cfg[k] && typeof cfg[k] === "object")
+      .map(k => [k, humanizeKey(k)]),
+  ];
+
+  if (allSections.length === 0) {
+    // Cfg is flat key/value, render as one section
+    return `<div class="config-section">
+      <h4>Configuration</h4>
+      <div class="config-grid">${
+        Object.entries(cfg).map(([k, v]) =>
+          `<div class="cfg-key">${humanizeKey(k)}</div><div class="cfg-val">${formatConfigValue(v)}</div>`
+        ).join("")
+      }</div>
+    </div>`;
+  }
+
+  return allSections.map(([key, title]) => {
+    const section = cfg[key];
+    if (!section || typeof section !== "object") return "";
+    const rows = Object.entries(section).map(([k, v]) =>
+      `<div class="cfg-key">${humanizeKey(k)}</div><div class="cfg-val">${formatConfigValue(v)}</div>`
+    ).join("");
+    return `<div class="config-section">
+      <h4>${title}</h4>
+      <div class="config-grid">${rows}</div>
+    </div>`;
+  }).join("");
 }
 
 // ----- investor economics -----
@@ -549,21 +614,32 @@ function setupCharts() {
   // populateBankChart has set any data. Trying to setVisibleRange on an empty
   // bank chart throws and aborts the rest of the render, leaving both charts
   // in a corrupt state. Skip the sync until the bank chart actually has data.
+  // Bidirectional time-axis sync. The _syncing flag breaks the feedback loop:
+  // when chart A drives chart B, the handler on B sees _syncing=true and skips
+  // its own setVisibleRange call.
+  state._syncing = false;
   state.priceChart.timeScale().subscribeVisibleTimeRangeChange(r => {
     if (!r) return;
-    // Level-of-detail marker culling: re-filter the stored full marker sets
-    // to only those in the visible range, then cull by priority tier so the
-    // chart isn't swamped with hundreds of labels at wide zoom.
     applyMarkersForVisibleRange(r);
-    // Bank chart follow.
+    if (state._syncing) return;
     if (!state.bankChart || !state.bankSeries) return;
     const data = state.bankSeries.data();
     if (!data || data.length === 0) return;
+    state._syncing = true;
     try {
       state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to });
-    } catch (e) {
-      /* out-of-range sync; ignore */
-    }
+    } catch (e) { /* out-of-range sync; ignore */ }
+    state._syncing = false;
+  });
+  state.bankChart.timeScale().subscribeVisibleTimeRangeChange(r => {
+    if (!r) return;
+    if (state._syncing) return;
+    if (!state.priceChart || !state.candleSeries) return;
+    state._syncing = true;
+    try {
+      state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to });
+    } catch (e) { /* out-of-range sync; ignore */ }
+    state._syncing = false;
   });
 
   // click handler for markers
@@ -938,8 +1014,27 @@ function populateBankChart(b) {
   // Dedupe same-time points (keep last — the resulting state)
   const seen = new Map();
   for (const p of netPnlPoints) seen.set(p.time, p.value);
-  const cleanPnl = [...seen.entries()].sort((a, b) => a[0] - b[0])
+  const sparsePnl = [...seen.entries()].sort((a, b) => a[0] - b[0])
     .map(([time, value]) => ({ time, value }));
+
+  // Densify: forward-fill the step function at every M15 candle so the bank
+  // chart can be panned/zoomed precisely (LWC's setVisibleRange snaps to
+  // existing data points; with only ~10 sparse points, sync was drifting).
+  const cleanPnl = [];
+  let cursor = 0;
+  let currentVal = sparsePnl[0]?.value ?? 0;
+  for (const c of candles) {
+    while (cursor < sparsePnl.length && sparsePnl[cursor].time <= c.t) {
+      currentVal = sparsePnl[cursor].value;
+      cursor++;
+    }
+    cleanPnl.push({ time: c.t, value: currentVal });
+  }
+  // Make sure final point is the true last value
+  if (cleanPnl.length && sparsePnl.length) {
+    const lastVal = sparsePnl[sparsePnl.length - 1].value;
+    cleanPnl[cleanPnl.length - 1] = { time: cleanPnl[cleanPnl.length - 1].time, value: lastVal };
+  }
 
   state.bankSeries.setData(cleanPnl);
 
@@ -989,7 +1084,20 @@ function populateBankChart(b) {
   state.fullBankMarkers = bankMarkers;
   state.bankSeries.setMarkers(cullBankMarkers(bankMarkers, 80).map(stripInternal));
 
-  state.bankChart.timeScale().fitContent();
+  // Sync bank chart's range to price chart's current range so they start
+  // aligned (instead of bank fitContent overriding the sync handler).
+  const priceRange = state.priceChart && state.priceChart.timeScale().getVisibleRange();
+  if (priceRange) {
+    state._syncing = true;
+    try {
+      state.bankChart.timeScale().setVisibleRange({ from: priceRange.from, to: priceRange.to });
+    } catch (e) {
+      state.bankChart.timeScale().fitContent();
+    }
+    state._syncing = false;
+  } else {
+    state.bankChart.timeScale().fitContent();
+  }
 }
 
 // ----- trace overlay -----
@@ -1002,6 +1110,10 @@ function clearTraceOverlay() {
     state.bankChart.removeSeries(state.traceEquitySeries);
     state.traceEquitySeries = null;
   }
+  // Restore Investor P&L lines that were hidden in detail mode
+  if (state.bankSeries) state.bankSeries.applyOptions({ visible: true });
+  if (state.capitalLine) state.capitalLine.applyOptions({ visible: true });
+  if (state.hwmSeries) state.hwmSeries.applyOptions({ visible: true });
   for (const s of (state.tracePositionLines || [])) {
     try { state.priceChart.removeSeries(s); } catch (e) {}
   }
@@ -1253,9 +1365,14 @@ function showTraceOverlay(a) {
   state._buildTraceMarkers = buildTraceMarkers;
   applyMarkersForVisibleRange();
 
-  // Equity curve on the bank chart
+  // Equity curve on the bank chart — hide Investor P&L lines so the
+  // smaller-scale account equity gets full focus.
   const eqSnaps = trace.equity_snapshots || [];
   if (eqSnaps.length > 0) {
+    if (state.bankSeries) state.bankSeries.applyOptions({ visible: false });
+    if (state.capitalLine) state.capitalLine.applyOptions({ visible: false });
+    if (state.hwmSeries) state.hwmSeries.applyOptions({ visible: false });
+
     state.traceEquitySeries = state.bankChart.addLineSeries({
       color: "#f0883e", lineWidth: 2, lineType: 0, title: `Equity #${a.num}`,
     });
