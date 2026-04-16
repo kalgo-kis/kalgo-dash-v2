@@ -212,6 +212,20 @@ header .subtitle {
   gap: 10px;
   align-items: center;
 }
+.chart-toggle-btn {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s;
+}
+.chart-toggle-btn:hover {
+  background: var(--border);
+}
 .dot {
   display: inline-block;
   width: 8px;

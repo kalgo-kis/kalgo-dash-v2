@@ -1139,6 +1139,12 @@ function clearTraceOverlay() {
     state.bankChart.removeSeries(state.traceWithdrawnSeries);
     state.traceWithdrawnSeries = null;
   }
+  const wdBtn = document.getElementById("toggle-withdrawn-line-btn");
+  if (wdBtn) {
+    wdBtn.style.display = "none";
+    wdBtn.onclick = null;
+    wdBtn.textContent = "Show cumulative withdrawn";
+  }
   // Restore Investor P&L lines that were hidden in detail mode
   if (state.bankSeries) state.bankSeries.applyOptions({ visible: true });
   if (state.capitalLine) state.capitalLine.applyOptions({ visible: true });
@@ -1470,6 +1476,22 @@ function showTraceOverlay(a) {
         lastT = t;
       }
       state.traceWithdrawnSeries.setData(cumPoints);
+
+      // Reveal the toggle button in the bank chart header and wire up its
+      // click handler. Button stays off by default.
+      const btn = document.getElementById("toggle-withdrawn-line-btn");
+      if (btn) {
+        btn.style.display = "";
+        btn.textContent = "Show cumulative withdrawn";
+        btn.onclick = () => {
+          if (!state.traceWithdrawnSeries) return;
+          const nextVisible = !state.traceWithdrawnSeries.options().visible;
+          state.traceWithdrawnSeries.applyOptions({ visible: nextVisible });
+          btn.textContent = nextVisible
+            ? "Hide cumulative withdrawn"
+            : "Show cumulative withdrawn";
+        };
+      }
     }
 
     // Re-sync bank chart's time range to the price chart's visible range
@@ -1612,7 +1634,6 @@ function showAccountDetail(a) {
       <button id="zoom-to-acct-btn">Zoom to account lifetime</button>
       ${a.trace ? '<button id="hide-trades-btn">Hide trades</button>' : '<span class="muted" style="font-size:11px;">No trace data (run with --trace)</span>'}
       ${a.trace ? '<button id="toggle-wd-btn">Show all withdrawals</button>' : ''}
-      ${a.trace ? '<button id="toggle-withdrawn-line-btn">Show cumulative withdrawn</button>' : ''}
       <button id="next-acct-btn">Next account &rarr;</button>
       <button id="prev-acct-btn">&larr; Prev account</button>
     </div>
@@ -1649,19 +1670,6 @@ function showAccountDetail(a) {
         state.traceEntryMarkers = state._buildTraceMarkers();
         applyMarkersForVisibleRange();
       }
-    };
-  }
-  // Toggle cumulative withdrawn line on the bank chart
-  const toggleWithdrawnLineBtn = document.getElementById("toggle-withdrawn-line-btn");
-  if (toggleWithdrawnLineBtn) {
-    toggleWithdrawnLineBtn.onclick = () => {
-      if (!state.traceWithdrawnSeries) return;
-      const currentlyVisible = state.traceWithdrawnSeries.options().visible;
-      const nextVisible = !currentlyVisible;
-      state.traceWithdrawnSeries.applyOptions({ visible: nextVisible });
-      toggleWithdrawnLineBtn.textContent = nextVisible
-        ? "Hide cumulative withdrawn"
-        : "Show cumulative withdrawn";
     };
   }
   document.getElementById("next-acct-btn").onclick = () => navigateAccount(a.num, 1);
