@@ -221,6 +221,17 @@ function renderBundle(b) {
   populatePriceChart(b);
   populateBankChart(b);
 
+  // Final fit-content on the price chart. Both charts auto-sync via the
+  // logical-range handlers. Deferred via requestAnimationFrame so any
+  // layout pass from populate functions completes first.
+  requestAnimationFrame(() => {
+    const count = b.candles_m15?.length || 0;
+    if (count > 0 && state.priceChart) {
+      state._syncing = false;
+      state.priceChart.timeScale().fitContent();
+    }
+  });
+
   // experiment config panel
   renderConfigPanel(b);
 
@@ -529,7 +540,13 @@ function commonChartOpts(height) {
       borderColor: COLORS.border,
       timeVisible: true,
       secondsVisible: false,
+      // minBarSpacing tunes how far a user can zoom OUT — 0.005 allows
+      // ~3000 bars per 15px (covers fold1 ~100k bars comfortably).
       minBarSpacing: 0.005,
+      rightOffset: 0,
+      // Prevents the chart from "scrolling past the right edge when new
+      // bars arrive"; also keeps fitContent stable.
+      shiftVisibleRangeOnNewBar: false,
     },
     rightPriceScale: { borderColor: COLORS.border, visible: true },
     leftPriceScale:  { borderColor: COLORS.border, visible: true },
@@ -791,10 +808,21 @@ function populatePriceChart(b) {
   const raw = buildMarkers(b.accounts);
   raw.sort((a, b) => a.time - b.time);
   state.fullPriceMarkers = raw;
-  // Apply an initial cull based on the full data extent (the subsequent
-  // fitContent + visibleRangeChange event will re-apply on first zoom).
   state.candleSeries.setMarkers(cullPriceMarkers(raw, 150).map(stripInternal));
-  state.priceChart.timeScale().fitContent();
+  // Set barSpacing so the full dataset fits the chart width on first paint.
+  // LWC's default is 6 px/bar which only shows ~200 of our 49k bars. We
+  // compute the ratio from the real rendered width so every fold (2-4 yr
+  // M15 data) fits without manual zoom.
+  if (candles.length > 0) {
+    const pcEl = document.getElementById("price-chart");
+    const usableW = Math.max(100, (pcEl?.clientWidth || 1280) - 140); // minus price scales
+    const fitSpacing = Math.max(0.005, usableW / candles.length);
+    state.priceChart.applyOptions({ timeScale: { barSpacing: fitSpacing } });
+    state.bankChart?.applyOptions({ timeScale: { barSpacing: fitSpacing } });
+    state.priceChart.timeScale().setVisibleLogicalRange({
+      from: 0, to: candles.length - 1,
+    });
+  }
 }
 
 /**
@@ -1086,20 +1114,18 @@ function populateBankChart(b) {
   state.fullBankMarkers = bankMarkers;
   state.bankSeries.setMarkers(cullBankMarkers(bankMarkers, 80).map(stripInternal));
 
-  // Sync bank chart's logical range to price chart's current range so they
-  // start aligned. Using logical range ensures edges match even when the
-  // range extends past data on either side.
-  const priceLogical = state.priceChart && state.priceChart.timeScale().getVisibleLogicalRange();
-  if (priceLogical) {
+  // Sync bank chart's logical range to the full data extent. Both charts
+  // have the same 49,436-point M15 schedule, so identical logical indices
+  // map to identical bars.
+  const bankData = state.bankSeries.data();
+  if (bankData.length > 0) {
     state._syncing = true;
     try {
-      state.bankChart.timeScale().setVisibleLogicalRange(priceLogical);
-    } catch (e) {
-      state.bankChart.timeScale().fitContent();
-    }
+      state.bankChart.timeScale().setVisibleLogicalRange({
+        from: 0, to: bankData.length - 1,
+      });
+    } catch (e) { /* ignore */ }
     state._syncing = false;
-  } else {
-    state.bankChart.timeScale().fitContent();
   }
 }
 
@@ -1379,13 +1405,35 @@ function showTraceOverlay(a) {
     state.traceEquitySeries = state.bankChart.addLineSeries({
       color: "#f0883e", lineWidth: 2, lineType: 0, title: `Equity #${a.num}`,
     });
+
+    // Snap equity snapshot timestamps to the nearest M15 candle time so
+    // the equity series uses the same logical schedule as the bank chart's
+    // densified investor P&L series. Without snapping, ~5k off-grid event
+    // timestamps extend the chart's logical index space and desync from
+    // the price chart.
+    const candleTimes = (state.currentBundle.candles_m15 || []).map(c => c.t);
+    function snapToCandle(t) {
+      if (!candleTimes.length) return t;
+      let lo = 0, hi = candleTimes.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (candleTimes[mid] < t) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo > 0 && Math.abs(candleTimes[lo - 1] - t) < Math.abs(candleTimes[lo] - t)) {
+        return candleTimes[lo - 1];
+      }
+      return candleTimes[lo];
+    }
+
     const dedup = (arr, key) => {
       const out = [];
       let lastT = null;
       for (const p of arr) {
-        const t = p.time_unix;
+        const rawT = p.time_unix;
         const v = p[key];
-        if (t == null || v == null) continue;
+        if (rawT == null || v == null) continue;
+        const t = snapToCandle(rawT);
         if (t === lastT) out[out.length - 1] = { time: t, value: v };
         else out.push({ time: t, value: v });
         lastT = t;
@@ -1393,6 +1441,17 @@ function showTraceOverlay(a) {
       return out;
     };
     state.traceEquitySeries.setData(dedup(eqSnaps, "eq"));
+
+    // Re-sync bank chart's logical range to price chart's after adding the
+    // equity series. The new series shouldn't shift anything (timestamps
+    // snapped), but re-sync is cheap insurance.
+    const priceLogical = state.priceChart.timeScale().getVisibleLogicalRange();
+    if (priceLogical) {
+      state._syncing = true;
+      try { state.bankChart.timeScale().setVisibleLogicalRange(priceLogical); }
+      catch (e) { /* ignore */ }
+      state._syncing = false;
+    }
   }
 }
 
