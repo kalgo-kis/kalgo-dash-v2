@@ -433,6 +433,13 @@ function renderAccountsTable(accounts) {
 
 // ----- charts -----
 function clearCharts() {
+  // Cancel any active RAF loops before tearing down DOM
+  if (state._bandsAnimFrame) {
+    cancelAnimationFrame(state._bandsAnimFrame);
+    state._bandsAnimFrame = null;
+  }
+  state._bandsCanvas = null;
+
   const pc = document.getElementById("price-chart");
   const bc = document.getElementById("bank-chart");
   pc.innerHTML = ""; bc.innerHTML = "";
@@ -710,6 +717,9 @@ function populatePriceChart(b) {
     state.fullPriceRange = [candles[0].time, candles[candles.length - 1].time];
   }
 
+  // Account period highlight bands (translucent colored backgrounds).
+  drawAccountBands(b);
+
   // Store the FULL marker set (with _kind preserved) so the LOD culler can
   // re-filter on every zoom change. The initial setMarkers call is replaced
   // by applyMarkersForVisibleRange once the bank chart is also ready.
@@ -720,6 +730,140 @@ function populatePriceChart(b) {
   // fitContent + visibleRangeChange event will re-apply on first zoom).
   state.candleSeries.setMarkers(cullPriceMarkers(raw, 150).map(stripInternal));
   state.priceChart.timeScale().fitContent();
+}
+
+/**
+ * Draw translucent colored bands behind candles for each account's lifetime.
+ * Green = profit (survived or blowup_profit), Red = loss (blowup_loss),
+ * Gray = total loss. Updates on every animation frame to track pan/zoom.
+ * Hidden in M1 detail mode via state._isM1Active check.
+ */
+function drawAccountBands(b) {
+  const chartEl = document.getElementById("price-chart");
+
+  // Remove any prior bands canvas + RAF
+  if (state._bandsAnimFrame) {
+    cancelAnimationFrame(state._bandsAnimFrame);
+    state._bandsAnimFrame = null;
+  }
+  let canvas = document.getElementById("account-bands-canvas");
+  if (canvas) canvas.remove();
+  canvas = document.createElement("canvas");
+  canvas.id = "account-bands-canvas";
+  canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;";
+  chartEl.style.position = "relative";
+  chartEl.appendChild(canvas);
+  state._bandsCanvas = canvas;
+
+  // Snap arbitrary timestamps to the nearest M15 candle time so
+  // timeToCoordinate returns a valid coordinate (LWC returns null for
+  // off-grid times).
+  const candleTimes = (b.candles_m15 || []).map(c => c.t);
+  function snapToCandle(t) {
+    if (!candleTimes.length) return t;
+    let lo = 0, hi = candleTimes.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (candleTimes[mid] < t) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0 && Math.abs(candleTimes[lo - 1] - t) < Math.abs(candleTimes[lo] - t)) {
+      return candleTimes[lo - 1];
+    }
+    return candleTimes[lo];
+  }
+
+  // Pre-compute band ranges (deploy time → close time) and colors
+  const bands = (b.accounts || []).map(a => {
+    const fromT = snapToCandle(toUnix(a.deploy_time));
+    const toT = snapToCandle(accountEndTime(a));
+    let color;
+    if (a.outcome === "survived" || a.outcome === "blowup_profit") {
+      color = "rgba(63, 185, 80, 0.10)";  // green
+    } else if (a.outcome === "total_loss") {
+      color = "rgba(110, 118, 129, 0.12)"; // gray
+    } else {
+      color = "rgba(248, 81, 73, 0.10)";   // red
+    }
+    return { fromT, toT, color, num: a.num };
+  }).filter(band => band.fromT && band.toT && band.toT > band.fromT);
+
+  function drawFrame() {
+    if (!state._bandsCanvas) return;
+    const cvs = state._bandsCanvas;
+    const parent = cvs.parentElement;
+    if (!parent) return;
+
+    // Skip drawing if M1 detail mode is active (one account view — bands obscure)
+    if (state._isM1Active) {
+      const ctx = cvs.getContext("2d");
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+      state._bandsAnimFrame = requestAnimationFrame(drawFrame);
+      return;
+    }
+
+    const w = parent.clientWidth;
+    const h = parent.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    if (cvs.width !== w * dpr || cvs.height !== h * dpr) {
+      cvs.width = w * dpr;
+      cvs.height = h * dpr;
+    }
+
+    const ctx = cvs.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    if (!state.priceChart || !state.candleSeries) {
+      state._bandsAnimFrame = requestAnimationFrame(drawFrame);
+      return;
+    }
+    const ts = state.priceChart.timeScale();
+
+    // Find the chart pane offset (LWC content area)
+    const chartDiv = document.getElementById("price-chart");
+    const allCanvases = chartDiv.querySelectorAll("canvas");
+    let lwcCanvas = null, maxArea = 0;
+    for (const c of allCanvases) {
+      if (c.id === "account-bands-canvas" || c.id === "trade-overlay-canvas") continue;
+      const area = c.clientWidth * c.clientHeight;
+      if (area > maxArea) { maxArea = area; lwcCanvas = c; }
+    }
+    let offsetX = 0, offsetY = 0, paneW = w, paneH = h;
+    if (lwcCanvas) {
+      const chartRect = chartDiv.getBoundingClientRect();
+      const paneRect = lwcCanvas.getBoundingClientRect();
+      offsetX = paneRect.left - chartRect.left;
+      offsetY = paneRect.top - chartRect.top;
+      paneW = paneRect.width;
+      paneH = paneRect.height;
+    }
+
+    // Clip to chart pane bounds
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(offsetX, offsetY, paneW, paneH);
+    ctx.clip();
+
+    for (const band of bands) {
+      const x1 = ts.timeToCoordinate(band.fromT);
+      const x2 = ts.timeToCoordinate(band.toT);
+      if (x1 === null && x2 === null) continue;
+      // Allow bands partially out of view by clamping to pane edges
+      const px1 = (x1 === null ? 0 : x1 + offsetX);
+      const px2 = (x2 === null ? offsetX + paneW : x2 + offsetX);
+      const left = Math.max(offsetX, Math.min(px1, px2));
+      const right = Math.min(offsetX + paneW, Math.max(px1, px2));
+      if (right <= left) continue;
+      ctx.fillStyle = band.color;
+      ctx.fillRect(left, offsetY, right - left, paneH);
+    }
+
+    ctx.restore();
+    state._bandsAnimFrame = requestAnimationFrame(drawFrame);
+  }
+
+  drawFrame();
 }
 
 function populateBankChart(b) {
