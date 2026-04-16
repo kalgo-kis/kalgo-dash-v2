@@ -631,32 +631,29 @@ function setupCharts() {
   // populateBankChart has set any data. Trying to setVisibleRange on an empty
   // bank chart throws and aborts the rest of the render, leaving both charts
   // in a corrupt state. Skip the sync until the bank chart actually has data.
-  // Bidirectional logical-range sync. Logical range (bar-index units) is
-  // identical across both charts because they share the same M15 data-point
-  // schedule — so edges and overscroll stay perfectly aligned, unlike
-  // time-based sync which clamps per chart. The _syncing flag breaks the
-  // feedback loop: when chart A drives chart B, the handler on B sees
-  // _syncing=true and skips its own set call.
+  // Bidirectional TIME-based sync. We use wall-clock time because the two
+  // charts have different data schedules in M1 detail mode (price chart
+  // gets M1 candles while bank chart keeps M15), so logical-index mapping
+  // would diverge. Time aligns both regardless of sampling rate.
+  // The _syncing flag breaks the feedback loop.
   state._syncing = false;
-  state.priceChart.timeScale().subscribeVisibleLogicalRangeChange(r => {
+  state.priceChart.timeScale().subscribeVisibleTimeRangeChange(r => {
     if (!r) return;
-    // Marker LOD still uses time range — get it from the time scale.
-    const tR = state.priceChart.timeScale().getVisibleRange();
-    if (tR) applyMarkersForVisibleRange(tR);
+    applyMarkersForVisibleRange(r);
     if (state._syncing) return;
     if (!state.bankChart || !state.bankSeries) return;
     const data = state.bankSeries.data();
     if (!data || data.length === 0) return;
     state._syncing = true;
-    try { state.bankChart.timeScale().setVisibleLogicalRange(r); }
+    try { state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
     catch (e) { /* ignore */ }
     state._syncing = false;
   });
-  state.bankChart.timeScale().subscribeVisibleLogicalRangeChange(r => {
+  state.bankChart.timeScale().subscribeVisibleTimeRangeChange(r => {
     if (!r || state._syncing) return;
     if (!state.priceChart || !state.candleSeries) return;
     state._syncing = true;
-    try { state.priceChart.timeScale().setVisibleLogicalRange(r); }
+    try { state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
     catch (e) { /* ignore */ }
     state._syncing = false;
   });
@@ -1114,16 +1111,13 @@ function populateBankChart(b) {
   state.fullBankMarkers = bankMarkers;
   state.bankSeries.setMarkers(cullBankMarkers(bankMarkers, 80).map(stripInternal));
 
-  // Sync bank chart's logical range to the full data extent. Both charts
-  // have the same 49,436-point M15 schedule, so identical logical indices
-  // map to identical bars.
-  const bankData = state.bankSeries.data();
-  if (bankData.length > 0) {
+  // Sync bank chart's time range to the price chart's current range so
+  // they start aligned.
+  const priceRange = state.priceChart && state.priceChart.timeScale().getVisibleRange();
+  if (priceRange) {
     state._syncing = true;
     try {
-      state.bankChart.timeScale().setVisibleLogicalRange({
-        from: 0, to: bankData.length - 1,
-      });
+      state.bankChart.timeScale().setVisibleRange({ from: priceRange.from, to: priceRange.to });
     } catch (e) { /* ignore */ }
     state._syncing = false;
   }
@@ -1442,13 +1436,12 @@ function showTraceOverlay(a) {
     };
     state.traceEquitySeries.setData(dedup(eqSnaps, "eq"));
 
-    // Re-sync bank chart's logical range to price chart's after adding the
-    // equity series. The new series shouldn't shift anything (timestamps
-    // snapped), but re-sync is cheap insurance.
-    const priceLogical = state.priceChart.timeScale().getVisibleLogicalRange();
-    if (priceLogical) {
+    // Re-sync bank chart's time range to the price chart's visible range
+    // right after adding the equity series.
+    const priceRange = state.priceChart.timeScale().getVisibleRange();
+    if (priceRange) {
       state._syncing = true;
-      try { state.bankChart.timeScale().setVisibleLogicalRange(priceLogical); }
+      try { state.bankChart.timeScale().setVisibleRange({ from: priceRange.from, to: priceRange.to }); }
       catch (e) { /* ignore */ }
       state._syncing = false;
     }
@@ -1765,9 +1758,12 @@ function zoomToAccount(a) {
   const from = toUnix(a.deploy_time);
   const to = accountEndTime(a);
   if (!from || !to) return;
-  // pad by 10% on each side
   const pad = Math.max(3600, (to - from) * 0.15);
-  state.priceChart.timeScale().setVisibleRange({ from: from - pad, to: to + pad });
+  const range = { from: from - pad, to: to + pad };
+  state._syncing = true;
+  try { state.priceChart.timeScale().setVisibleRange(range); } catch (e) {}
+  try { state.bankChart.timeScale().setVisibleRange(range); } catch (e) {}
+  state._syncing = false;
 }
 
 function navigateAccount(currentNum, dir) {
