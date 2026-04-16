@@ -1008,7 +1008,10 @@ function populateBankChart(b) {
 
   for (const a of econ.accounts) {
     const deployT = toUnix(a.deploy_time);
-    const closeT = toUnix(a.blowup_time) || (toUnix(a.deploy_time) + (a.lifetime_days || 1) * 86400);
+    // For blowups: blowup_time. For survivors: accountEndTime (last trace
+    // event / eval_end) so the distribution lands at end of test, not at
+    // deploy time.
+    const closeT = accountEndTime(a);
 
     // At deploy: capital call (if any) deepens the underwater position
     if (deployT && a.capitalCall > 0) {
@@ -1087,7 +1090,9 @@ function populateBankChart(b) {
   const bankMarkers = [];
   for (const a of econ.accounts) {
     const deployT = toUnix(a.deploy_time);
-    const closeT = toUnix(a.blowup_time);
+    // For survivors, close time falls back to accountEndTime so the
+    // distribution marker lands at end of test, not at deploy time.
+    const distT = accountEndTime(a);
 
     if (deployT && a.capitalCall > 0) {
       bankMarkers.push({
@@ -1096,15 +1101,12 @@ function populateBankChart(b) {
         _kind: "deploy",
       });
     }
-    if (a.distribution > 0) {
-      const distT = closeT || deployT;
-      if (distT) {
-        bankMarkers.push({
-          time: distT, position: "belowBar", color: COLORS.green,
-          shape: "arrowUp", text: `dist $${Math.round(a.distribution)}`,
-          _kind: "blowup",
-        });
-      }
+    if (a.distribution > 0 && distT) {
+      bankMarkers.push({
+        time: distT, position: "belowBar", color: COLORS.green,
+        shape: "arrowUp", text: `dist $${Math.round(a.distribution)}`,
+        _kind: "blowup",
+      });
     }
   }
   bankMarkers.sort((x, y) => x.time - y.time);
