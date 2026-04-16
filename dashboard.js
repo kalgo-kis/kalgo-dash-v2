@@ -158,10 +158,12 @@ function renderBundle(b) {
   document.getElementById("hdr-fold-period").textContent = `${b.fold} · ${b.eval_start}..${b.eval_end}`;
   document.getElementById("data-warning-card").style.display = "none";
 
-  // Compute fleet metrics — uses investor economics (computed in renderAccountsTable)
+  // Compute investor economics first — header metrics + table + chart all depend on it.
   const startingCap = b.starting_capital || m.bank_start || 5000;
   const totalWithdrawn = accounts.reduce((s, a) => s + (a.withdrawn || 0), 0);
-  const econ = state._investorEcon;
+  const stakePerAcct = m.stake_per_account || (accounts[0]?.stake || 1000);
+  const econ = computeInvestorEconomics(accounts, startingCap, stakePerAcct);
+  state._investorEcon = econ;
 
   // Investor Return: total_distributed / total_called
   if (econ) {
@@ -327,9 +329,9 @@ function renderAccountsTable(accounts) {
   const startCap = b ? (b.starting_capital || m.bank_start || 5000) : 5000;
   const stakePerAcct = m.stake_per_account || (accounts[0]?.stake || 1000);
 
-  // Compute investor economics
-  const econ = computeInvestorEconomics(accounts, startCap, stakePerAcct);
-  state._investorEcon = econ; // store for chart use
+  // Use cached investor economics (computed in renderBundle), or compute now if missing
+  const econ = state._investorEcon || computeInvestorEconomics(accounts, startCap, stakePerAcct);
+  state._investorEcon = econ;
 
   const colDefs = {
     num:         { label: "#",            tip: "Account number (deploy order)" },
