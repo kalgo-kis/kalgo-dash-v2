@@ -1616,11 +1616,6 @@ function showAccountDetail(a) {
   }
 
   document.getElementById("close-detail-btn").style.display = "";
-  // Swap right column: hide accounts table, show detail panel
-  const tableWrap = document.getElementById("accounts-table-wrap");
-  const detailPanel = document.getElementById("detail-panel");
-  if (tableWrap) tableWrap.style.display = "none";
-  if (detailPanel) detailPanel.style.display = "";
   document.getElementById("detail-body").innerHTML = `
     <div class="detail-header">
       <div class="title">Account #${a.num}</div>
@@ -1854,11 +1849,6 @@ function closeDetail() {
   // Deselect table row
   document.querySelectorAll("#accounts-table tbody tr.selected").forEach(r => r.classList.remove("selected"));
   document.getElementById("close-detail-btn").style.display = "none";
-  // Swap right column back: show accounts table, hide detail panel
-  const tableWrap = document.getElementById("accounts-table-wrap");
-  const detailPanel = document.getElementById("detail-panel");
-  if (tableWrap) tableWrap.style.display = "";
-  if (detailPanel) detailPanel.style.display = "none";
 }
 
 // ----- multi-fold overview -----
