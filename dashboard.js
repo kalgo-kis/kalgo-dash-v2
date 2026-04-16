@@ -573,20 +573,24 @@ function setupCharts() {
   });
   state.priceChart.subscribeClick(param => {
     if (!param || !param.time) return;
-    // find closest deploy marker to clicked time
+    // Find the account whose [deploy, close] range contains the clicked time.
+    // With single-account-per-instrument enforced, ranges don't overlap, but
+    // pick the deploy closest to the click for safety.
     const t = param.time;
     const b = state.currentBundle;
     if (!b) return;
-    let best = null, bestDist = Infinity;
+    let containing = null, containingDist = Infinity;
     for (const a of b.accounts) {
-      const at = toUnix(a.deploy_time);
-      if (at == null) continue;
-      const d = Math.abs(at - t);
-      if (d < bestDist) { bestDist = d; best = a; }
+      const dT = toUnix(a.deploy_time);
+      const cT = accountEndTime(a);
+      if (dT == null || cT == null) continue;
+      if (t >= dT && t <= cT) {
+        const d = t - dT;
+        if (d < containingDist) { containingDist = d; containing = a; }
+      }
     }
-    // only select if click is reasonably close (< 1 day)
-    if (best && bestDist < 86400) {
-      showAccountDetail(best);
+    if (containing) {
+      showAccountDetail(containing);
     }
   });
 }
@@ -843,7 +847,7 @@ function drawAccountBands(b) {
     // Draw each band as a thick translucent diagonal line connecting
     // the deploy point to the close point. Account number label sits
     // at the line's midpoint for identification.
-    const BAND_THICKNESS = 9; // CSS px
+    const BAND_THICKNESS = 3; // CSS px
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     for (const band of bands) {
@@ -1487,13 +1491,22 @@ function accountEndTime(a) {
   const bt = toUnix(a.blowup_time);
   if (bt) return bt;
 
-  // Survivor: find the last trace event
+  // Survivor: find the last trace event. Bundle format uses different
+  // field names per array (v2: time_unix in events, time in basket_close;
+  // v3: time everywhere). Read whichever is present.
   if (a.trace) {
+    const pluck = (arr, ...keys) => (arr || []).map(o => {
+      for (const k of keys) if (o[k] != null) return o[k];
+      return null;
+    }).filter(t => t != null && !isNaN(t));
     const allTimes = [
-      ...(a.trace.orders || []).map(o => o.time),
-      ...(a.trace.closes || []).map(c => c.time),
-      ...(a.trace.equity_snapshots || []).map(s => s.time),
-      ...(a.trace.withdrawals || []).map(w => w.time),
+      ...pluck(a.trace.orders, "time", "time_unix"),
+      ...pluck(a.trace.grid_entry_events, "time_unix", "time"),
+      ...pluck(a.trace.closes, "time", "time_unix"),
+      ...pluck(a.basket_close_events, "time", "time_unix"),
+      ...pluck(a.trace.equity_snapshots, "time", "time_unix"),
+      ...pluck(a.trace.withdrawals, "time", "time_unix"),
+      ...pluck(a.trace.withdrawal_events, "time_unix", "time"),
     ];
     if (allTimes.length) return Math.max(...allTimes);
   }
