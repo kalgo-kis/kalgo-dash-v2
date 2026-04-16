@@ -773,20 +773,24 @@ function drawAccountBands(b) {
     return candleTimes[lo];
   }
 
-  // Pre-compute band ranges (deploy time → close time) and colors
+  // Pre-compute band ranges (deploy time → close time), deploy price, colors.
+  // Each band is a thick translucent horizontal line anchored at the
+  // account's deploy price (= first grid entry price), spanning its lifetime.
   const bands = (b.accounts || []).map(a => {
     const fromT = snapToCandle(toUnix(a.deploy_time));
     const toT = snapToCandle(accountEndTime(a));
+    const firstEntry = (a.trace?.grid_entry_events || [])[0];
+    const deployPrice = firstEntry?.price || null;
     let color;
     if (a.outcome === "survived" || a.outcome === "blowup_profit") {
-      color = "rgba(63, 185, 80, 0.10)";  // green
+      color = "rgba(63, 185, 80, 0.35)";  // green
     } else if (a.outcome === "total_loss") {
-      color = "rgba(110, 118, 129, 0.12)"; // gray
+      color = "rgba(110, 118, 129, 0.40)"; // gray
     } else {
-      color = "rgba(248, 81, 73, 0.10)";   // red
+      color = "rgba(248, 81, 73, 0.35)";   // red
     }
-    return { fromT, toT, color, num: a.num };
-  }).filter(band => band.fromT && band.toT && band.toT > band.fromT);
+    return { fromT, toT, deployPrice, color, num: a.num };
+  }).filter(band => band.fromT && band.toT && band.toT > band.fromT && band.deployPrice);
 
   function drawFrame() {
     if (!state._bandsCanvas) return;
@@ -845,18 +849,22 @@ function drawAccountBands(b) {
     ctx.rect(offsetX, offsetY, paneW, paneH);
     ctx.clip();
 
+    // Draw each band as a thick translucent horizontal line at the
+    // deploy price, spanning the account's lifetime.
+    const BAND_THICKNESS = 10; // CSS px
     for (const band of bands) {
       const x1 = ts.timeToCoordinate(band.fromT);
       const x2 = ts.timeToCoordinate(band.toT);
+      const y = state.candleSeries.priceToCoordinate(band.deployPrice);
+      if (y === null) continue;
       if (x1 === null && x2 === null) continue;
-      // Allow bands partially out of view by clamping to pane edges
       const px1 = (x1 === null ? 0 : x1 + offsetX);
       const px2 = (x2 === null ? offsetX + paneW : x2 + offsetX);
       const left = Math.max(offsetX, Math.min(px1, px2));
       const right = Math.min(offsetX + paneW, Math.max(px1, px2));
       if (right <= left) continue;
       ctx.fillStyle = band.color;
-      ctx.fillRect(left, offsetY, right - left, paneH);
+      ctx.fillRect(left, y + offsetY - BAND_THICKNESS / 2, right - left, BAND_THICKNESS);
     }
 
     ctx.restore();
@@ -1142,6 +1150,7 @@ function showTraceOverlay(a) {
     let lwcCanvas = null, maxArea = 0;
     for (const c of allCanvases) {
       if (c.id === "trade-overlay-canvas") continue;
+      if (c.id === "account-bands-canvas") continue;
       const area = c.clientWidth * c.clientHeight;
       if (area > maxArea) { maxArea = area; lwcCanvas = c; }
     }
