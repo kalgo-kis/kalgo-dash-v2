@@ -339,6 +339,26 @@ header .subtitle {
 }
 
 /* =================================================================
+   Main grid — charts left, info right
+   ================================================================= */
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 440px;
+  gap: var(--s-4);
+  margin-bottom: var(--s-4);
+  align-items: flex-start;
+}
+.main-left, .main-right {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  min-width: 0;
+}
+@media (max-width: 1280px) {
+  .main-grid { grid-template-columns: 1fr; }
+}
+
+/* =================================================================
    Fleet summary bar — hero metrics (Bloomberg-style KPI strip)
    ================================================================= */
 .fleet-summary {
@@ -351,6 +371,62 @@ header .subtitle {
   overflow: visible;
   position: relative;
   box-shadow: var(--shadow-sm);
+}
+/* Compact vertical variant for right-column layout */
+.fleet-summary.compact {
+  flex-direction: column;
+  margin-bottom: 0;
+}
+.fleet-summary.compact .metric {
+  border-right: none;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--s-3) var(--s-4);
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.fleet-summary.compact .metric:last-child { border-bottom: none; }
+.fleet-summary.compact .metric-label {
+  margin-bottom: 0;
+  flex: 0 0 auto;
+}
+.fleet-summary.compact .metric-value {
+  font-size: var(--fs-md);
+  text-align: right;
+  flex: 1 1 auto;
+}
+.fleet-summary.compact .metric.primary .metric-value {
+  font-size: var(--fs-xl);
+}
+.fleet-summary.compact .metric-sub {
+  display: none; /* secondary text hidden in compact to save space */
+}
+.fleet-summary.compact .metric.primary .metric-sub {
+  display: block;
+  font-size: var(--fs-2xs);
+  width: 100%;
+  margin-top: 4px;
+  text-align: right;
+}
+.fleet-summary.compact .metric.primary {
+  flex-direction: column;
+  align-items: stretch;
+}
+.fleet-summary.compact .metric.primary .metric-label {
+  margin-bottom: 4px;
+}
+/* Tooltip anchor still works (arrow now points up since cards stack below their neighbors) */
+.fleet-summary.compact .metric-tip {
+  left: auto;
+  right: 0;
+  transform: translateX(0);
+}
+.fleet-summary.compact .metric-tip::before,
+.fleet-summary.compact .metric-tip::after {
+  left: auto;
+  right: var(--s-4);
+  transform: none;
 }
 .fleet-summary .metric {
   flex: 1;
@@ -600,21 +676,29 @@ header .subtitle {
 .chart.tall { height: 360px; }
 
 /* =================================================================
-   Accounts section — table + detail
+   Accounts section — table OR detail (right column toggle)
    ================================================================= */
 .accounts-section {
-  display: grid;
-  grid-template-columns: 1fr 420px;
+  display: flex;
+  flex-direction: column;
   gap: var(--s-3);
-  margin-bottom: var(--s-4);
+  margin-bottom: 0;
 }
 .accounts-table-wrap {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   overflow: auto;
-  max-height: 520px;
+  max-height: 640px;
   box-shadow: var(--shadow-sm);
+}
+#detail-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+  max-height: 900px;
+  overflow: auto;
 }
 .accounts-table {
   width: 100%;
@@ -1290,9 +1374,8 @@ header .subtitle {
   .fleet-summary .metric.primary .metric-value { font-size: var(--fs-xl); }
 }
 @media (max-width: 1100px) {
-  .fleet-summary { flex-wrap: wrap; }
-  .fleet-summary .metric { flex-basis: 25%; border-bottom: 1px solid var(--border-subtle); }
-  .accounts-section { grid-template-columns: 1fr; }
+  .fleet-summary:not(.compact) { flex-wrap: wrap; }
+  .fleet-summary:not(.compact) .metric { flex-basis: 25%; border-bottom: 1px solid var(--border-subtle); }
   .selector-bar .large-select { min-width: 260px; }
   .detail-meta { grid-template-columns: repeat(2, 1fr); }
 }
