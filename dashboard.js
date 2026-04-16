@@ -592,29 +592,12 @@ function setupCharts() {
 }
 
 function buildMarkers(accounts) {
-  // Big picture: deploy markers (colored by outcome), blowup markers, recovery events.
-  // No basket close markers — those only appear in trace view.
+  // Account periods are now shown as colored diagonal lines (drawAccountBands)
+  // with the account number labelled at the midpoint, so deploy and blowup
+  // arrow markers are intentionally omitted to reduce visual noise. Only
+  // recovery events remain as inline markers.
   const markers = [];
   for (const a of accounts) {
-    const dt = toUnix(a.deploy_time);
-    if (dt != null) {
-      const color = (a.outcome === "survived" || a.outcome === "blowup_profit") ? COLORS.green
-                  : a.outcome === "total_loss" ? COLORS.gray
-                  : COLORS.red;
-      markers.push({
-        time: dt, position: "belowBar", color,
-        shape: "arrowUp", text: `#${a.num}`,
-        _kind: "deploy", _acct: a.num,
-      });
-    }
-    const bt = toUnix(a.blowup_time);
-    if (bt != null && a.blowup) {
-      markers.push({
-        time: bt, position: "aboveBar", color: COLORS.red,
-        shape: "arrowDown", text: `×${a.num}`,
-        _kind: "blowup", _acct: a.num,
-      });
-    }
     for (const ev of (a.recovery_events || [])) {
       const tm = toUnix(ev.time);
       if (tm != null) {
@@ -755,42 +738,50 @@ function drawAccountBands(b) {
   chartEl.appendChild(canvas);
   state._bandsCanvas = canvas;
 
-  // Snap arbitrary timestamps to the nearest M15 candle time so
-  // timeToCoordinate returns a valid coordinate (LWC returns null for
-  // off-grid times).
-  const candleTimes = (b.candles_m15 || []).map(c => c.t);
-  function snapToCandle(t) {
-    if (!candleTimes.length) return t;
-    let lo = 0, hi = candleTimes.length - 1;
+  // Binary-search M15 candles by time. Returns the candle index whose
+  // timestamp is closest to t (used to look up high/low/close at a moment).
+  const candles = b.candles_m15 || [];
+  function findCandleIdx(t) {
+    if (!candles.length) return -1;
+    let lo = 0, hi = candles.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (candleTimes[mid] < t) lo = mid + 1;
+      if (candles[mid].t < t) lo = mid + 1;
       else hi = mid;
     }
-    if (lo > 0 && Math.abs(candleTimes[lo - 1] - t) < Math.abs(candleTimes[lo] - t)) {
-      return candleTimes[lo - 1];
+    if (lo > 0 && Math.abs(candles[lo - 1].t - t) < Math.abs(candles[lo].t - t)) {
+      return lo - 1;
     }
-    return candleTimes[lo];
+    return lo;
   }
 
-  // Pre-compute band ranges (deploy time → close time), deploy price, colors.
-  // Each band is a thick translucent horizontal line anchored at the
-  // account's deploy price (= first grid entry price), spanning its lifetime.
+  // Pre-compute one band per account.
+  // Geometry mirrors where the deploy/blowup arrow markers used to sit:
+  //   - start: (deploy_time, candle.low at deploy)   — was "belowBar"
+  //   - end:   (close_time,  candle.high at close)   — was "aboveBar"
+  // For survivors (no blowup), end is the last candle's close price.
   const bands = (b.accounts || []).map(a => {
-    const fromT = snapToCandle(toUnix(a.deploy_time));
-    const toT = snapToCandle(accountEndTime(a));
-    const firstEntry = (a.trace?.grid_entry_events || [])[0];
-    const deployPrice = firstEntry?.price || null;
+    const deployT = toUnix(a.deploy_time);
+    const closeT = accountEndTime(a);
+    const fromIdx = findCandleIdx(deployT);
+    const toIdx = findCandleIdx(closeT);
+    if (fromIdx < 0 || toIdx < 0) return null;
+    const fromCandle = candles[fromIdx];
+    const toCandle = candles[toIdx];
+    const fromT = fromCandle.t;
+    const toT = toCandle.t;
+    const fromPrice = fromCandle.l;  // deploy marker sits at candle low
+    const toPrice = a.blowup ? toCandle.h : toCandle.c;  // blowup at high, survivor at last close
     let color;
     if (a.outcome === "survived" || a.outcome === "blowup_profit") {
-      color = "rgba(63, 185, 80, 0.35)";  // green
+      color = "rgba(63, 185, 80, 0.45)";  // green
     } else if (a.outcome === "total_loss") {
-      color = "rgba(110, 118, 129, 0.40)"; // gray
+      color = "rgba(110, 118, 129, 0.50)"; // gray
     } else {
-      color = "rgba(248, 81, 73, 0.35)";   // red
+      color = "rgba(248, 81, 73, 0.45)";   // red
     }
-    return { fromT, toT, deployPrice, color, num: a.num };
-  }).filter(band => band.fromT && band.toT && band.toT > band.fromT && band.deployPrice);
+    return { fromT, toT, fromPrice, toPrice, color, num: a.num };
+  }).filter(b => b && b.toT > b.fromT);
 
   function drawFrame() {
     if (!state._bandsCanvas) return;
@@ -849,22 +840,39 @@ function drawAccountBands(b) {
     ctx.rect(offsetX, offsetY, paneW, paneH);
     ctx.clip();
 
-    // Draw each band as a thick translucent horizontal line at the
-    // deploy price, spanning the account's lifetime.
-    const BAND_THICKNESS = 10; // CSS px
+    // Draw each band as a thick translucent diagonal line connecting
+    // the deploy point to the close point. Account number label sits
+    // at the line's midpoint for identification.
+    const BAND_THICKNESS = 9; // CSS px
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
     for (const band of bands) {
       const x1 = ts.timeToCoordinate(band.fromT);
       const x2 = ts.timeToCoordinate(band.toT);
-      const y = state.candleSeries.priceToCoordinate(band.deployPrice);
-      if (y === null) continue;
-      if (x1 === null && x2 === null) continue;
-      const px1 = (x1 === null ? 0 : x1 + offsetX);
-      const px2 = (x2 === null ? offsetX + paneW : x2 + offsetX);
-      const left = Math.max(offsetX, Math.min(px1, px2));
-      const right = Math.min(offsetX + paneW, Math.max(px1, px2));
-      if (right <= left) continue;
-      ctx.fillStyle = band.color;
-      ctx.fillRect(left, y + offsetY - BAND_THICKNESS / 2, right - left, BAND_THICKNESS);
+      const y1 = state.candleSeries.priceToCoordinate(band.fromPrice);
+      const y2 = state.candleSeries.priceToCoordinate(band.toPrice);
+      if (x1 === null || x2 === null || y1 === null || y2 === null) continue;
+      const px1 = x1 + offsetX, py1 = y1 + offsetY;
+      const px2 = x2 + offsetX, py2 = y2 + offsetY;
+      ctx.strokeStyle = band.color;
+      ctx.lineWidth = BAND_THICKNESS;
+      ctx.beginPath();
+      ctx.moveTo(px1, py1);
+      ctx.lineTo(px2, py2);
+      ctx.stroke();
+
+      // Account number label at the midpoint
+      const midX = (px1 + px2) / 2;
+      const midY = (py1 + py2) / 2;
+      const label = "#" + band.num;
+      ctx.font = "bold 11px Inter, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      // Subtle dark shadow for legibility against any candle background
+      ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+      ctx.fillText(label, midX + 1, midY + 1);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.fillText(label, midX, midY);
     }
 
     ctx.restore();
