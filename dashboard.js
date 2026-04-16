@@ -1135,6 +1135,10 @@ function clearTraceOverlay() {
     state.bankChart.removeSeries(state.traceEquitySeries);
     state.traceEquitySeries = null;
   }
+  if (state.traceWithdrawnSeries) {
+    state.bankChart.removeSeries(state.traceWithdrawnSeries);
+    state.traceWithdrawnSeries = null;
+  }
   // Restore Investor P&L lines that were hidden in detail mode
   if (state.bankSeries) state.bankSeries.applyOptions({ visible: true });
   if (state.capitalLine) state.capitalLine.applyOptions({ visible: true });
@@ -1438,6 +1442,36 @@ function showTraceOverlay(a) {
     };
     state.traceEquitySeries.setData(dedup(eqSnaps, "eq"));
 
+    // Cumulative withdrawn line (light blue) — off by default, toggled
+    // via the "Show cumulative withdrawn" button in the detail panel.
+    // Monotonic step function showing total extracted at each moment.
+    const wdEventsArr = trace.withdrawal_events || [];
+    if (wdEventsArr.length > 0) {
+      state.traceWithdrawnSeries = state.bankChart.addLineSeries({
+        color: "#58a6ff",
+        lineWidth: 2,
+        lineStyle: 0,
+        title: `Withdrawn #${a.num}`,
+        visible: false,
+        lineType: 1, // step-style, matches step-function nature
+      });
+      const sortedWd = [...wdEventsArr].sort((x, y) => (x.time_unix || 0) - (y.time_unix || 0));
+      const cumPoints = [];
+      let cum = 0;
+      let lastT = null;
+      for (const ev of sortedWd) {
+        const rawT = ev.time_unix;
+        const amt = ev.amount;
+        if (rawT == null || amt == null) continue;
+        cum += amt;
+        const t = snapToCandle(rawT);
+        if (t === lastT) cumPoints[cumPoints.length - 1] = { time: t, value: cum };
+        else cumPoints.push({ time: t, value: cum });
+        lastT = t;
+      }
+      state.traceWithdrawnSeries.setData(cumPoints);
+    }
+
     // Re-sync bank chart's time range to the price chart's visible range
     // right after adding the equity series.
     const priceRange = state.priceChart.timeScale().getVisibleRange();
@@ -1578,6 +1612,7 @@ function showAccountDetail(a) {
       <button id="zoom-to-acct-btn">Zoom to account lifetime</button>
       ${a.trace ? '<button id="hide-trades-btn">Hide trades</button>' : '<span class="muted" style="font-size:11px;">No trace data (run with --trace)</span>'}
       ${a.trace ? '<button id="toggle-wd-btn">Show all withdrawals</button>' : ''}
+      ${a.trace ? '<button id="toggle-withdrawn-line-btn">Show cumulative withdrawn</button>' : ''}
       <button id="next-acct-btn">Next account &rarr;</button>
       <button id="prev-acct-btn">&larr; Prev account</button>
     </div>
@@ -1614,6 +1649,19 @@ function showAccountDetail(a) {
         state.traceEntryMarkers = state._buildTraceMarkers();
         applyMarkersForVisibleRange();
       }
+    };
+  }
+  // Toggle cumulative withdrawn line on the bank chart
+  const toggleWithdrawnLineBtn = document.getElementById("toggle-withdrawn-line-btn");
+  if (toggleWithdrawnLineBtn) {
+    toggleWithdrawnLineBtn.onclick = () => {
+      if (!state.traceWithdrawnSeries) return;
+      const currentlyVisible = state.traceWithdrawnSeries.options().visible;
+      const nextVisible = !currentlyVisible;
+      state.traceWithdrawnSeries.applyOptions({ visible: nextVisible });
+      toggleWithdrawnLineBtn.textContent = nextVisible
+        ? "Hide cumulative withdrawn"
+        : "Show cumulative withdrawn";
     };
   }
   document.getElementById("next-acct-btn").onclick = () => navigateAccount(a.num, 1);
