@@ -1542,8 +1542,10 @@ function computeBasketMetrics(a) {
     } else {
       const c = ev.data;
       const side = (c.closed_basket || "").toLowerCase();
-      const closeType = (c.close_type || "").toUpperCase();
-      if (closeType === "TP") {
+      // v2 bundle uses `reason: "tp"` (lowercase); older builds used
+      // `close_type: "TP"`. Accept either for compatibility.
+      const closeType = (c.reason || c.close_type || "").toLowerCase();
+      if (closeType === "tp") {
         tpCount++;
         if (side === "buy") buyTPs++;
         else sellTPs++;
