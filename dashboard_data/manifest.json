@@ -1,7 +1,19 @@
 {
-  "count": 1,
-  "bundled_count": 1,
+  "count": 2,
+  "bundled_count": 2,
   "experiments": [
+    {
+      "experiment_id": "v3_flexgrid_baseline_fold4",
+      "fold": "fold4",
+      "eval_start": "2020-01-01",
+      "eval_end": "2021-12-31",
+      "total_return": 1.0009,
+      "total_accounts": 6,
+      "blowup_count": 5,
+      "bank_end": 5004.48,
+      "timestamp": null,
+      "bundled": true
+    },
     {
       "experiment_id": "v3_gp10_tp10_limitfix",
       "fold": "fold4",
