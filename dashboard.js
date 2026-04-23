@@ -11,6 +11,43 @@ const COLORS = {
   surface: "#161b22", bg: "#0d1117",
 };
 
+// FlexGrid-tier shades for entry markers. Index 0 = base tier (lightest),
+// 3 = flex tier 3 (darkest). Allows the chart to communicate which tier
+// each entry belongs to without a legend.
+const TIER_SHADES = {
+  buy:  ["#a8e6b0", "#56d364", "#2ea043", "#1f6f2a"], // light → dark green
+  sell: ["#ffb3ab", "#f85149", "#b62324", "#8b1414"], // light → dark red
+};
+
+// Resolve the active tier index for a given entry depth, given the bundle's
+// per-tier `activates_at_depth` thresholds. Highest tier whose threshold ≤
+// depth wins (matches GridEngine._active_tier semantics in the sim).
+// Returns 0..3. Bundles without flex tiers (legacy / non-FlexGrid) get 0.
+function tierIndexForDepth(depth, thresholds) {
+  if (typeof depth !== "number" || depth < 0) return 0;
+  if (thresholds.flex3 != null && depth >= thresholds.flex3) return 3;
+  if (thresholds.flex2 != null && depth >= thresholds.flex2) return 2;
+  if (thresholds.flex1 != null && depth >= thresholds.flex1) return 1;
+  return 0;
+}
+
+function tierColorFor(side, depth, thresholds) {
+  const idx = tierIndexForDepth(depth, thresholds);
+  const palette = (side === "buy") ? TIER_SHADES.buy : TIER_SHADES.sell;
+  return palette[idx];
+}
+
+// Pull tier thresholds out of policy_config. Missing tier sections (e.g.
+// legacy bundles) yield null thresholds → tierIndexForDepth returns 0 →
+// all entries render in the base shade. This preserves prior dashboard
+// appearance for non-FlexGrid bundles.
+function getTierThresholds(bundle) {
+  const cfg = (bundle && bundle.policy_config) || {};
+  const get = (k) => (cfg[k] && typeof cfg[k].activates_at_depth === "number")
+    ? cfg[k].activates_at_depth : null;
+  return { flex1: get("flex_tier_1"), flex2: get("flex_tier_2"), flex3: get("flex_tier_3") };
+}
+
 const state = {
   manifest: null,
   currentBundle: null,
@@ -1174,6 +1211,11 @@ function showTraceOverlay(a) {
   state.traceActive = true;
   state._tracedAccountNum = a.num;
 
+  // Tier thresholds for shading entry markers by FlexGrid tier
+  // (depth_at_entry on each event). Legacy bundles return all-null
+  // thresholds → all entries render in the base shade.
+  const tierThresholds = getTierThresholds(state.currentBundle);
+
   const entries = trace.grid_entry_events || [];
   const blowupT = toUnix(a.blowup_time);
   state.tracePositionLines = [];
@@ -1225,7 +1267,11 @@ function showTraceOverlay(a) {
     if (ev.type === "entry") {
       const e = ev.data;
       const isBuy = (e.dir || "").toLowerCase() === "buy";
-      const tick = { t: nearestCandleTime(e.time_unix), v: e.price, color: isBuy ? COLORS.green : COLORS.red };
+      // Tier-shaded entry: lighter for base tier, darker for deeper flex
+      // tiers. Falls back to base shade when depth_at_entry is missing
+      // (legacy bundles) or thresholds are unset.
+      const color = tierColorFor(isBuy ? "buy" : "sell", e.depth_at_entry, tierThresholds);
+      const tick = { t: nearestCandleTime(e.time_unix), v: e.price, color };
       allTicks.push(tick);
       (isBuy ? pendingBuy : pendingSell).push(tick);
     } else {
