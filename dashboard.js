@@ -1167,6 +1167,140 @@ function populateBankChart(b) {
 // grid entry markers on the price chart and an equity curve on the bank chart.
 // These are stored in state.traceOverlay and cleaned up on close/navigate.
 
+// ---- Trade-marker hover tooltip ----
+//
+// The trade ticks are painted onto a custom canvas overlay (not LightweightCharts
+// markers), so they can't carry native hover handlers. Instead we listen for
+// mousemove on the chart container, project each tick's (time, price) to screen
+// coordinates using the LWC API, and find the nearest tick to the cursor.
+// If within HOVER_RADIUS_PX, we show a small absolute-positioned div with the
+// trade's metadata: side, lot size, depth, tier (entries) or pnl (closes).
+
+const TRACE_HOVER_RADIUS_PX = 6;
+
+function installTraceHoverTooltip(chartEl) {
+  // Clean up any previous instance
+  removeTraceHoverTooltip();
+
+  const tip = document.createElement("div");
+  tip.id = "trade-hover-tooltip";
+  tip.style.cssText = (
+    "position:absolute;display:none;pointer-events:none;z-index:200;" +
+    "background:rgba(13,17,23,0.95);border:1px solid #30363d;border-radius:4px;" +
+    "color:#e6edf3;font:11px/1.4 'IBM Plex Mono',monospace;" +
+    "padding:6px 8px;white-space:nowrap;" +
+    "box-shadow:0 2px 8px rgba(0,0,0,0.4);"
+  );
+  chartEl.appendChild(tip);
+
+  const onMove = (ev) => {
+    const ticks = state._traceTicks;
+    if (!ticks || !ticks.length || !state.priceChart) {
+      tip.style.display = "none";
+      return;
+    }
+    const rect = chartEl.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    const my = ev.clientY - rect.top;
+
+    // Pane offset (matches drawFrame()): the LWC pane is inset from the
+    // chart container by the price-scale + time-scale gutters.
+    const allCanvases = chartEl.querySelectorAll("canvas");
+    let lwcCanvas = null, maxArea = 0;
+    for (const c of allCanvases) {
+      if (c.id === "trade-overlay-canvas") continue;
+      if (c.id === "account-bands-canvas") continue;
+      const area = c.clientWidth * c.clientHeight;
+      if (area > maxArea) { maxArea = area; lwcCanvas = c; }
+    }
+    let offsetX = 0, offsetY = 0;
+    if (lwcCanvas) {
+      const paneRect = lwcCanvas.getBoundingClientRect();
+      offsetX = paneRect.left - rect.left;
+      offsetY = paneRect.top - rect.top;
+    }
+
+    const ts = state.priceChart.timeScale();
+    let nearest = null;
+    let nearestDist = TRACE_HOVER_RADIUS_PX;
+    for (const tk of ticks) {
+      const tx = ts.timeToCoordinate(tk.t);
+      if (tx === null) continue;
+      const ty = state.candleSeries.priceToCoordinate(tk.v);
+      if (ty === null) continue;
+      const sx = tx + offsetX;
+      const sy = ty + offsetY;
+      const d = Math.max(Math.abs(sx - mx), Math.abs(sy - my));
+      if (d <= nearestDist) { nearestDist = d; nearest = tk; }
+    }
+
+    if (!nearest || !nearest.meta) {
+      tip.style.display = "none";
+      return;
+    }
+    tip.innerHTML = formatTradeTooltip(nearest);
+    tip.style.display = "block";
+    // Position above and slightly right of the cursor; flip if near edges
+    const tipW = tip.offsetWidth || 160;
+    const tipH = tip.offsetHeight || 60;
+    let left = mx + 12;
+    let top  = my - tipH - 8;
+    if (left + tipW > rect.width)  left = mx - tipW - 12;
+    if (top < 0)                    top  = my + 14;
+    tip.style.left = left + "px";
+    tip.style.top  = top  + "px";
+  };
+
+  const onLeave = () => { tip.style.display = "none"; };
+
+  chartEl.addEventListener("mousemove", onMove);
+  chartEl.addEventListener("mouseleave", onLeave);
+
+  state._traceHoverTooltip = tip;
+  state._traceHoverHandlers = { chartEl, onMove, onLeave };
+}
+
+function removeTraceHoverTooltip() {
+  const h = state._traceHoverHandlers;
+  if (h && h.chartEl) {
+    h.chartEl.removeEventListener("mousemove", h.onMove);
+    h.chartEl.removeEventListener("mouseleave", h.onLeave);
+  }
+  state._traceHoverHandlers = null;
+  const existing = document.getElementById("trade-hover-tooltip");
+  if (existing) existing.remove();
+  state._traceHoverTooltip = null;
+}
+
+function formatTradeTooltip(tick) {
+  const m = tick.meta || {};
+  const TIER_LABELS = ["base", "flex 1", "flex 2", "flex 3"];
+  const fmtPrice = (p) => (typeof p === "number") ? p.toFixed(5) : "—";
+  const fmtLots  = (l) => (typeof l === "number") ? l.toFixed(2)   : "—";
+  if (m.kind === "entry") {
+    const tierLabel = TIER_LABELS[m.tier] || "?";
+    const sideColor = (m.side === "BUY") ? COLORS.green : COLORS.red;
+    return (
+      `<div style="color:${sideColor};font-weight:600">` +
+        `${m.side} entry · ${fmtLots(m.lots)} lots</div>` +
+      `<div style="color:${COLORS.textMuted};margin-top:2px">` +
+        `price ${fmtPrice(m.price)} · depth ${m.depth} · tier ${tierLabel}</div>`
+    );
+  }
+  if (m.kind === "close") {
+    const pnlColor = (m.pnl >= 0) ? COLORS.green : COLORS.red;
+    const pnlSign  = (m.pnl >= 0) ? "+" : "";
+    return (
+      `<div style="color:${COLORS.text};font-weight:600">` +
+        `${m.side} basket close · ${m.reason || "—"}</div>` +
+      `<div style="color:${COLORS.textMuted};margin-top:2px">` +
+        `price ${fmtPrice(m.price)} · ${m.positions} positions · ` +
+        `<span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span></div>`
+    );
+  }
+  return `<div style="color:${COLORS.textMuted}">${JSON.stringify(m)}</div>`;
+}
+
 function clearTraceOverlay() {
   if (state.traceEquitySeries) {
     state.bankChart.removeSeries(state.traceEquitySeries);
@@ -1198,6 +1332,8 @@ function clearTraceOverlay() {
   const cvs = document.getElementById("trade-overlay-canvas");
   if (cvs) cvs.remove();
   state._traceCanvas = null;
+  state._traceTicks = null;
+  removeTraceHoverTooltip();
   state.traceActive = false;
   state.traceEntryMarkers = null;
   state._tracedAccountNum = null;
@@ -1271,7 +1407,21 @@ function showTraceOverlay(a) {
       // tiers. Falls back to base shade when depth_at_entry is missing
       // (legacy bundles) or thresholds are unset.
       const color = tierColorFor(isBuy ? "buy" : "sell", e.depth_at_entry, tierThresholds);
-      const tick = { t: nearestCandleTime(e.time_unix), v: e.price, color };
+      const tier = tierIndexForDepth(e.depth_at_entry, tierThresholds);
+      const tick = {
+        t: nearestCandleTime(e.time_unix),
+        v: e.price,
+        color,
+        meta: {
+          kind: "entry",
+          side: isBuy ? "BUY" : "SELL",
+          lots: e.lots,
+          price: e.price,
+          depth: e.depth_at_entry,
+          tier,
+          time_unix: e.time_unix,
+        },
+      };
       allTicks.push(tick);
       (isBuy ? pendingBuy : pendingSell).push(tick);
     } else {
@@ -1281,7 +1431,20 @@ function showTraceOverlay(a) {
       const closeT = nearestCandleTime(ev.time);
       if (cp > 0) {
         const closeColor = side === "buy" ? COLORS.blue : COLORS.purple;
-        allTicks.push({ t: closeT, v: cp, color: closeColor });
+        allTicks.push({
+          t: closeT,
+          v: cp,
+          color: closeColor,
+          meta: {
+            kind: "close",
+            side: side.toUpperCase(),
+            price: cp,
+            pnl: c.pnl,
+            positions: c.positions,
+            reason: c.reason,
+            time_unix: ev.time,
+          },
+        });
         // Draw dashed lines from each pending entry to this close
         const pending = side === "buy" ? pendingBuy : pendingSell;
         const lineColor = side === "buy" ? "rgba(63,185,80,0.35)" : "rgba(248,81,73,0.35)";
@@ -1325,6 +1488,8 @@ function showTraceOverlay(a) {
 
   state._traceCanvas = canvas;
   state._traceAnimFrame = null;
+  state._traceTicks = allTicks;
+  installTraceHoverTooltip(chartEl);
 
   function drawFrame() {
     if (!state._traceCanvas) return;
