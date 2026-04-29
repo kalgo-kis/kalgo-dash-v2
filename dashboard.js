@@ -428,6 +428,22 @@ function activeTierForDepth(tiers, depth) {
   return active;
 }
 
+// Per-trade P&L approximation. Matches engine grid.py.unrealized_pnl():
+// pip_value = $10 per lot per pip (approx for EUR pairs; engine uses this too).
+// Round-trip commission = $3/lot/side × 2 = $6 per lot per closed trade.
+const PIP_VALUE_USD = 10.0;
+const COMMISSION_PER_LOT_RT = 6.0;
+
+function tradePnL(side, entryPrice, exitPrice, lots) {
+  if (entryPrice == null || exitPrice == null || lots == null) return null;
+  const pipDiff = (side === "BUY")
+    ? (exitPrice - entryPrice) / PIP_PRICE
+    : (entryPrice - exitPrice) / PIP_PRICE;
+  const gross = pipDiff * lots * PIP_VALUE_USD;
+  const commission = COMMISSION_PER_LOT_RT * lots;
+  return gross - commission;
+}
+
 function buildComplianceRows(bundle) {
   const cfg = bundle.policy_config || {};
   const tiers = getTiersFromConfig(cfg);
@@ -450,10 +466,12 @@ function buildComplianceRows(bundle) {
     }
     events.sort((a, b) => a.time - b.time);
 
-    // Per-side basket state: depth (count) + last entry price for spacing check
+    // Per-side basket state: depth (count) + last entry price for spacing check.
+    // Also track rows of the currently-open basket so we can backfill exit_price
+    // and pnl when the basket closes.
     const state = {
-      buy:  { depth: 0, lastPrice: null },
-      sell: { depth: 0, lastPrice: null },
+      buy:  { depth: 0, lastPrice: null, openRows: [] },
+      sell: { depth: 0, lastPrice: null, openRows: [] },
     };
 
     for (const ev of events) {
@@ -478,7 +496,7 @@ function buildComplianceRows(bundle) {
           spacingOk = Math.abs(actualSpacing - expectedSpacing) <= COMPLIANCE_SPACING_TOL_PIPS;
         }
 
-        rows.push({
+        const row = {
           id: e.id || "",
           acct: acct.num,
           time: ev.time,
@@ -487,6 +505,9 @@ function buildComplianceRows(bundle) {
           tier: tier.label,
           tier_name: tier.name,
           price: e.price,
+          exit_price: null,         // backfilled on basket close (null = still open / blew up)
+          exit_reason: null,
+          pnl: null,                // backfilled on basket close
           actual_lot: actualLot,
           expected_lot: expectedLot,
           lot_ok: lotOk,
@@ -494,19 +515,34 @@ function buildComplianceRows(bundle) {
           expected_spacing: expectedSpacing,
           spacing_ok: spacingOk,            // null for first entry of basket
           ok: lotOk && (spacingOk === null || spacingOk),
-        });
+        };
+        rows.push(row);
+        s.openRows.push(row);
 
         s.depth += 1;
         s.lastPrice = e.price;
       } else {
-        // basket close: reset that side
-        const sideKey = (ev.data.closed_basket || "").toLowerCase();
-        if (sideKey === "buy" || sideKey === "sell") {
-          state[sideKey].depth = 0;
-          state[sideKey].lastPrice = null;
+        // basket close: backfill exit_price + pnl on every entry that was in
+        // this basket cycle, then reset that side's basket state.
+        const c = ev.data;
+        const sideKey = (c.closed_basket || "").toLowerCase();
+        if (sideKey !== "buy" && sideKey !== "sell") continue;
+        const s = state[sideKey];
+        const closePrice = c.close_price;
+        const closeReason = c.reason;
+        if (closePrice && closePrice > 0) {
+          for (const row of s.openRows) {
+            row.exit_price = closePrice;
+            row.exit_reason = closeReason;
+            row.pnl = tradePnL(row.side, row.price, closePrice, row.actual_lot);
+          }
         }
+        s.depth = 0;
+        s.lastPrice = null;
+        s.openRows = [];
       }
     }
+    // Any remaining openRows (basket open at end / blew up) keep exit_price=null.
   }
 
   return rows;
@@ -594,7 +630,9 @@ const TC_COLUMNS = [
   { key: "side",            label: "Side",     align: "left" },
   { key: "depth",           label: "Depth",    align: "num" },
   { key: "tier",            label: "Tier",     align: "left" },
-  { key: "price",           label: "Price",    align: "num" },
+  { key: "price",           label: "Entry",    align: "num" },
+  { key: "exit_price",      label: "Exit",     align: "num" },
+  { key: "pnl",             label: "P&L $",    align: "num" },
   { key: "actual_lot",      label: "Lot (act / exp)",   align: "num" },
   { key: "actual_spacing",  label: "Spacing pips (act / exp)", align: "num" },
   { key: "ok",              label: "OK?",      align: "left" },
@@ -680,6 +718,13 @@ function redrawComplianceBody() {
 
     const okCell = r.ok ? `<span class="ok">\u2713</span>` : `<span class="bad">\u2717</span>`;
 
+    const pnlCell = (r.pnl == null)
+      ? `<span class="muted">—</span>`
+      : `<span class="${r.pnl >= 0 ? 'ok' : 'bad'}">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)}</span>`;
+    const exitCell = (r.exit_price == null)
+      ? `<span class="muted">—</span>`
+      : fmtPrice(r.exit_price);
+
     return `<tr class="${r.ok ? '' : 'bad'}">
       <td class="trade-id">${r.id || '—'}</td>
       <td>${fmtTime(r.time)}</td>
@@ -687,20 +732,88 @@ function redrawComplianceBody() {
       <td class="num">${r.depth}</td>
       <td>${r.tier}</td>
       <td class="num">${fmtPrice(r.price)}</td>
+      <td class="num">${exitCell}</td>
+      <td class="num">${pnlCell}</td>
       <td class="num actual-vs-expected">${lotCell}</td>
       <td class="num actual-vs-expected">${spCell}</td>
       <td>${okCell}</td>
     </tr>`;
   }).join("");
 
+  const colCount = TC_COLUMNS.length;
   const truncateHTML = rows.length > cap
-    ? `<tr><td colspan="9" class="muted" style="padding:8px;text-align:center">${rows.length - cap} more rows hidden — narrow with "Issues only" filter</td></tr>`
+    ? `<tr><td colspan="${colCount}" class="muted" style="padding:8px;text-align:center">${rows.length - cap} more rows hidden — narrow with "Issues only" filter or use search</td></tr>`
     : "";
+
+  // ── Totals row ─────────────────────────────────────────────────────
+  // Aggregates over ALL filtered rows (not just the visible cap):
+  //   - sum lots
+  //   - sum P&L for closed trades only (open trades show as "—")
+  //   - lot-weighted average entry price (uses every row)
+  //   - lot-weighted average exit price (uses only closed rows)
+  // Buy and sell get separate totals + a combined row, since avg entry/exit
+  // for a mixed set of buys and sells doesn't have a coherent meaning.
+  const aggBy = (filterFn) => {
+    let sumLots = 0, sumPnL = 0, hasPnL = false;
+    let weightedEntry = 0, sumLotsEntry = 0;
+    let weightedExit = 0, sumLotsExit = 0;
+    for (const r of rows.filter(filterFn)) {
+      const lots = r.actual_lot || 0;
+      sumLots += lots;
+      if (r.price != null) {
+        weightedEntry += r.price * lots;
+        sumLotsEntry += lots;
+      }
+      if (r.exit_price != null) {
+        weightedExit += r.exit_price * lots;
+        sumLotsExit += lots;
+      }
+      if (r.pnl != null) {
+        sumPnL += r.pnl;
+        hasPnL = true;
+      }
+    }
+    return {
+      lots: sumLots,
+      pnl: hasPnL ? sumPnL : null,
+      avgEntry: sumLotsEntry > 0 ? weightedEntry / sumLotsEntry : null,
+      avgExit:  sumLotsExit  > 0 ? weightedExit  / sumLotsExit  : null,
+      count: rows.filter(filterFn).length,
+    };
+  };
+  const tBuy  = aggBy(r => r.side === "BUY");
+  const tSell = aggBy(r => r.side === "SELL");
+  const tAll  = aggBy(() => true);
+
+  const renderTotalsRow = (label, t, accent) => {
+    const pnlCell = (t.pnl == null)
+      ? `<span class="muted">—</span>`
+      : `<span class="${t.pnl >= 0 ? 'ok' : 'bad'}">${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>`;
+    const entryCell = t.avgEntry == null ? `<span class="muted">—</span>` : fmtPrice(t.avgEntry);
+    const exitCell  = t.avgExit  == null ? `<span class="muted">—</span>` : fmtPrice(t.avgExit);
+    return `<tr class="totals ${accent}">
+      <td class="totals-label" colspan="5">${label} <span class="muted">(${t.count} trades)</span></td>
+      <td class="num">${entryCell}</td>
+      <td class="num">${exitCell}</td>
+      <td class="num">${pnlCell}</td>
+      <td class="num">${t.lots.toFixed(2)} lots</td>
+      <td></td>
+      <td></td>
+    </tr>`;
+  };
+
+  let totalsHTML = "";
+  if (tAll.count > 0) {
+    totalsHTML += renderTotalsRow("Σ BUY (lot-wtd avgs)",  tBuy,  "buy");
+    totalsHTML += renderTotalsRow("Σ SELL (lot-wtd avgs)", tSell, "sell");
+    totalsHTML += renderTotalsRow("Σ ALL (lot-wtd avgs)",  tAll,  "all");
+  }
 
   scrollEl.innerHTML = `
     <table class="tc-table">
       <thead><tr>${headerHTML}</tr></thead>
       <tbody>${bodyHTML}${truncateHTML}</tbody>
+      <tfoot>${totalsHTML}</tfoot>
     </table>
   `;
 

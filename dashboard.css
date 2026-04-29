@@ -1272,6 +1272,25 @@ header .subtitle {
   font-size: 10px;
   letter-spacing: 0.02em;
 }
+/* Totals (tfoot): sticky to bottom of scroll, always visible */
+.tc-table tfoot tr.totals {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border-subtle);
+  font-weight: 600;
+}
+.tc-table tfoot tr.totals.buy   { color: #56d364; border-top: 1px solid var(--border-subtle); }
+.tc-table tfoot tr.totals.sell  { color: #f85149; }
+.tc-table tfoot tr.totals.all   { color: var(--text); background: #1d2330; border-top: 1px solid #58a6ff; }
+.tc-table tfoot tr.totals td {
+  padding: 5px 8px;
+  border-bottom: none;
+}
+.tc-table tfoot tr.totals .totals-label {
+  text-align: left;
+  letter-spacing: 0.04em;
+}
 
 .tc-scroll {
   flex: 1;
