@@ -444,10 +444,30 @@ function tradePnL(side, entryPrice, exitPrice, lots) {
   return gross - commission;
 }
 
+// Find the M15 candle whose timestamp is closest to (and ≤) `unixTime`.
+// Used to approximate stop-out / EOT exit prices when the broker doesn't
+// emit a close event per position (blowups + survivor baskets at end of test).
+function findCandleAtTime(bundle, unixTime) {
+  const candles = bundle.candles_m15 || [];
+  if (!candles.length || !unixTime) return null;
+  let lo = 0, hi = candles.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (candles[mid].t <= unixTime) lo = mid;
+    else hi = mid - 1;
+  }
+  return candles[lo];
+}
+
 function buildComplianceRows(bundle) {
   const cfg = bundle.policy_config || {};
   const tiers = getTiersFromConfig(cfg);
   if (!tiers.length) return [];
+
+  // Approximate the EOT close time from the last candle, used for survivor
+  // baskets that the runner closes via _close_all_eot.
+  const lastCandle = (bundle.candles_m15 || []).slice(-1)[0];
+  const eotTime = lastCandle ? lastCandle.t : null;
 
   const rows = [];
   for (const acct of (bundle.accounts || [])) {
@@ -542,7 +562,42 @@ function buildComplianceRows(bundle) {
         s.openRows = [];
       }
     }
-    // Any remaining openRows (basket open at end / blew up) keep exit_price=null.
+    // Backfill exit_price + pnl on any baskets still open at this point.
+    // These trades belong to a basket that EITHER:
+    //   (a) blew up — broker stop-out closed positions but didn't emit a
+    //       per-basket close event, OR
+    //   (b) was forcibly closed at end-of-test (survivor accounts).
+    // In both cases we approximate the exit using the M15 candle close at
+    // the account's close time. This is approximate (the broker actually
+    // closes at bid/ask + slippage on stop-out, with possibly different
+    // prices per position in incremental stop-out) — but close enough that
+    // the compliance totals roughly tie to account-level net P&L. Without
+    // this backfill the totals show only WINNING (TP'd) baskets and look
+    // unrealistically positive vs the rest of the dashboard.
+    const stillOpen = state.buy.openRows.length + state.sell.openRows.length;
+    if (stillOpen > 0) {
+      // acct.outcome is one of: blowup_loss / blowup_profit / total_loss / survived
+      const isSurvivor = (acct.outcome === "survived" || acct.reason === "end_of_eval");
+      const closeTime = isSurvivor ? eotTime : (toUnix(acct.blowup_time) || eotTime);
+      const closeReason = isSurvivor ? "eot" : "stopout";
+      const candle = findCandleAtTime(bundle, closeTime);
+      if (candle) {
+        // For BUY basket the broker closes at bid (~candle close);
+        // for SELL at ask (~candle close + spread). We approximate both with
+        // candle close — error is ≤ a few pips of spread, negligible at this scale.
+        const exitPrice = candle.c;
+        for (const row of state.buy.openRows) {
+          row.exit_price = exitPrice;
+          row.exit_reason = closeReason;
+          row.pnl = tradePnL(row.side, row.price, exitPrice, row.actual_lot);
+        }
+        for (const row of state.sell.openRows) {
+          row.exit_price = exitPrice;
+          row.exit_reason = closeReason;
+          row.pnl = tradePnL(row.side, row.price, exitPrice, row.actual_lot);
+        }
+      }
+    }
   }
 
   return rows;
