@@ -529,9 +529,14 @@ function buildComplianceRows(bundle) {
           tier: tier.label,
           tier_name: tier.name,
           price: e.price,
-          exit_price: null,         // backfilled on basket close (null = still open / blew up)
-          exit_reason: null,
-          pnl: null,                // backfilled on basket close
+          // Exact close info from the bundle (joined by entry_id from the
+          // broker's per_position close events). Null only if the trade
+          // never closed (shouldn't happen — every position closes via
+          // some path in the engine).
+          exit_price: (e.exit_price != null) ? e.exit_price : null,
+          exit_reason: e.exit_reason || null,
+          exit_time_unix: e.exit_time_unix || null,
+          pnl: (e.pnl_net != null) ? e.pnl_net : null,
           actual_lot: actualLot,
           expected_lot: expectedLot,
           lot_ok: lotOk,
@@ -541,105 +546,53 @@ function buildComplianceRows(bundle) {
           ok: lotOk && (spacingOk === null || spacingOk),
         };
         rows.push(row);
-        s.openRows.push(row);
 
         s.depth += 1;
         s.lastPrice = e.price;
       } else {
-        // Basket close (TP / recovery_tp / surrender). Backfill exit_price +
-        // EXACT per-trade P&L on every entry that was in this basket cycle.
-        //
-        // Exact split: per-trade gross_pnl = basket.pnl × (gross_share_i / Σ gross_share)
-        // where gross_share_i = (close - entry_i) × lots_i for BUY, or
-        // (entry_i - close) × lots_i for SELL. This back-derives each
-        // position's contribution to basket.pnl exactly (sums to basket.pnl
-        // to the floating-point cent — broker's pv cancels in the ratio).
-        //
-        // Per-trade commission = lots_i × $6 (entry $3 + close $3, both
-        // broker-exact since commission is purely lot-proportional).
-        //
-        // Per-trade net = gross - commission. Σ over basket = basket.pnl - 2×basket.commission.
-        const c = ev.data;
-        const sideKey = (c.closed_basket || "").toLowerCase();
-        if (sideKey !== "buy" && sideKey !== "sell") continue;
-        const s = state[sideKey];
-        const closePrice = c.close_price;
-        const basketPnL = c.pnl;
-        const closeReason = c.reason;
-        if (closePrice && closePrice > 0 && s.openRows.length > 0) {
-          // Compute gross-share per position
-          let totalShare = 0;
-          const shares = s.openRows.map(row => {
-            const pipDiff = (sideKey === "buy")
-              ? (closePrice - row.price)
-              : (row.price - closePrice);
-            const share = pipDiff * row.actual_lot;   // per broker formula (modulo pv)
-            totalShare += share;
-            return share;
-          });
-          for (let i = 0; i < s.openRows.length; i++) {
-            const row = s.openRows[i];
-            // Exact gross P&L for this trade. Total share can be 0 only if
-            // close_price equals every entry (degenerate); fall back to
-            // proportional-by-lots in that case.
-            const grossPnL = (totalShare !== 0)
-              ? basketPnL * (shares[i] / totalShare)
-              : 0;
-            const commission = row.actual_lot * COMMISSION_PER_LOT_RT;
-            row.exit_price = closePrice;
-            row.exit_reason = closeReason;
-            row.pnl = grossPnL - commission;
-          }
+        // Basket close: just reset the per-side basket-cycle state (used for
+        // depth / spacing tracking). Per-trade exit_price and pnl come from
+        // the bundle's exact per-position close info that bundle.py joined
+        // by entry_id — see entry construction below.
+        const sideKey = (ev.data.closed_basket || "").toLowerCase();
+        if (sideKey === "buy" || sideKey === "sell") {
+          state[sideKey].depth = 0;
+          state[sideKey].lastPrice = null;
         }
-        s.depth = 0;
-        s.lastPrice = null;
-        s.openRows = [];
       }
     }
 
-    // Per-account exact tie-out: any open trades at this point belong to a
-    // basket that blew up or was forcibly closed at end-of-test. The broker
-    // doesn't emit per-position close prices for those paths, so we
-    // distribute the residual = acct.net − Σ TP_trade_net across the open
-    // trades, weighted by lots. This guarantees Σ per-trade pnl per
-    // account == acct.net to the floating-point cent — the residual
-    // implicitly absorbs swap costs, blow-up loss, and the spread cost of
-    // forced closures, all of which are baked into acct.net but not
-    // present in the per-basket close events.
-    const acctNet = (typeof acct.net === "number") ? acct.net : 0;
-    const sumTPpnl = rows
-      .filter(r => r.acct === acct.num && r.pnl != null)
-      .reduce((s, r) => s + r.pnl, 0);
-    const residual = acctNet - sumTPpnl;
-    const openRows = [...state.buy.openRows, ...state.sell.openRows];
-    const totalOpenLots = openRows.reduce((s, r) => s + r.actual_lot, 0);
-    if (openRows.length > 0) {
-      // Approximate exit_price for display only (M15 candle close at the
-      // account's blowup/EOT time). The PNL we report is residual-distributed,
-      // not derived from this exit_price — display vs accounting are decoupled.
-      const isSurvivor = (acct.outcome === "survived" || acct.reason === "end_of_eval");
-      const closeTime = isSurvivor ? eotTime : (toUnix(acct.blowup_time) || eotTime);
-      const closeReason = isSurvivor ? "eot" : "stopout";
-      const candle = findCandleAtTime(bundle, closeTime);
-      const displayExit = candle ? candle.c : null;
-
-      for (const row of openRows) {
-        row.exit_price = displayExit;
-        row.exit_reason = closeReason;
-        row.pnl = (totalOpenLots > 0)
-          ? residual * (row.actual_lot / totalOpenLots)
-          : 0;
-      }
-    } else if (Math.abs(residual) > 0.01) {
-      // Edge case: every trade in this account TP'd, but acct.net ≠ Σ TP_pnl
-      // (residual is just swap cost). Spread the residual across all trades
-      // by lots so the account total still ties exactly. Difference is
-      // typically small (a few cents per account from swap).
-      const acctRows = rows.filter(r => r.acct === acct.num);
-      const totalLots = acctRows.reduce((s, r) => s + r.actual_lot, 0);
-      if (totalLots > 0) {
-        for (const row of acctRows) {
-          row.pnl = (row.pnl || 0) + residual * (row.actual_lot / totalLots);
+    // Per-account exact tie-out adjustments. Two effects exist outside the
+    // broker's per-trade realized_pnl:
+    //   1. SWAP — debited from balance over time, not per trade.
+    //   2. NEGATIVE BALANCE PROTECTION (NBP) — when broker's true trading
+    //      loss exceeds the account's stake, residual is capped at 0 and
+    //      acct.net is bounded at (withdrawn - stake). The "absorbed" loss
+    //      doesn't reach the trader.
+    // Both are real, account-level accounting. We distribute them across
+    // the account's trades proportionally to (lots × hours-held) so the
+    // displayed Σ per-trade pnl ties to acct.net to the floating-point cent.
+    const acctRows = rows.filter(r => r.acct === acct.num);
+    if (acctRows.length > 0) {
+      const swap = (typeof acct.swap === "number") ? acct.swap : 0;
+      const sumPnL = acctRows.reduce((s, r) => s + (r.pnl || 0), 0);
+      // Total adjustment that needs to be distributed: (acct.net - Σ pnl_net - swap_already_in?).
+      // pnl is broker-exact realized − commission; swap and NBP are NOT in it.
+      // So target adjustment = acct.net - Σ pnl_net.
+      const adjustment = acct.net - sumPnL;
+      if (Math.abs(adjustment) > 1e-6) {
+        const isSurvivor = (acct.outcome === "survived" || acct.reason === "end_of_eval");
+        const fallbackClose = isSurvivor ? eotTime : (toUnix(acct.blowup_time) || eotTime);
+        const weights = acctRows.map(r => {
+          const exitT = r.exit_time_unix || fallbackClose || r.time;
+          const hours = Math.max(1, (exitT - r.time) / 3600);
+          return r.actual_lot * hours;
+        });
+        const totalW = weights.reduce((s, w) => s + w, 0);
+        if (totalW > 0) {
+          for (let i = 0; i < acctRows.length; i++) {
+            acctRows[i].pnl = (acctRows[i].pnl || 0) + adjustment * (weights[i] / totalW);
+          }
         }
       }
     }
