@@ -290,6 +290,9 @@ function renderConfigPanel(b) {
     configEl.innerHTML = `<div class="placeholder">No configuration data embedded in this experiment.</div>`;
   }
 
+  // Compliance spreadsheet (every trade vs configured tier params)
+  renderComplianceTablePanel(b);
+
   // Notes: load from localStorage
   const expId = b.experiment_id || "";
   const notesKey = `kalgo_notes_${expId}`;
@@ -361,6 +364,316 @@ function renderStructuredConfig(cfg) {
       <div class="config-grid">${rows}</div>
     </div>`;
   }).join("");
+}
+
+// ----- Trade-Compliance Spreadsheet -----
+//
+// For every entry trade in the bundle, compute the EXPECTED lot and EXPECTED
+// spacing (from the previous same-side entry in the same basket cycle) using
+// the configured tier params, then compare to the ACTUAL trade. Surface any
+// mismatch so the user can quickly find trades that don't match the intended
+// strategy.
+//
+// Inputs:
+//   bundle.policy_config.{base_tier, flex_tier_1/2/3, grid}
+//     - tier.activates_at_depth, tier.spacing_pips, tier.tp_pips, tier.expected_lot
+//   bundle.accounts[].trace.grid_entry_events[]  (price, lots, dir, depth_at_entry)
+//   bundle.accounts[].basket_close_events[]      (closed_basket, time)
+//
+// Tolerance:
+//   - Lot: exact (lots are quantized to 0.01)
+//   - Spacing: ±2 pips (allows for tick-level execution variance)
+//
+// Depth-from-tag is what each entry already carries; we additionally track
+// the "basket cycle depth" (depth within the current open basket on this
+// side, reset on each close). For the engine these are the same, but
+// computing it from the close events is useful as a cross-check.
+
+const COMPLIANCE_SPACING_TOL_PIPS = 2.0;
+const PIP_PRICE = 0.0001;
+
+function getTiersFromConfig(cfg) {
+  // Returns sorted ascending by activates_at_depth: [base, flex1?, flex2?, flex3?]
+  const out = [];
+  if (cfg && cfg.base_tier) {
+    out.push({
+      name: "base",
+      label: "base",
+      depth: 0,
+      spacing_pips: cfg.base_tier.spacing_pips,
+      tp_pips: cfg.base_tier.tp_pips,
+      expected_lot: cfg.base_tier.expected_lot,
+    });
+  }
+  for (const k of ["flex_tier_1", "flex_tier_2", "flex_tier_3"]) {
+    const t = cfg && cfg[k];
+    if (!t || typeof t.activates_at_depth !== "number") continue;
+    out.push({
+      name: k,
+      label: k.replace("flex_tier_", "flex "),
+      depth: t.activates_at_depth,
+      spacing_pips: t.spacing_pips,
+      tp_pips: t.tp_pips,
+      expected_lot: t.expected_lot,
+    });
+  }
+  out.sort((a, b) => a.depth - b.depth);
+  return out;
+}
+
+function activeTierForDepth(tiers, depth) {
+  // Highest tier whose activates_at_depth ≤ depth
+  let active = tiers[0];
+  for (const t of tiers) if (t.depth <= depth) active = t;
+  return active;
+}
+
+function buildComplianceRows(bundle) {
+  const cfg = bundle.policy_config || {};
+  const tiers = getTiersFromConfig(cfg);
+  if (!tiers.length) return [];
+
+  const rows = [];
+  for (const acct of (bundle.accounts || [])) {
+    const entries = (acct.trace && acct.trace.grid_entry_events) || [];
+    const closes  = acct.basket_close_events || [];
+
+    // Merge entries + closes chronologically
+    const events = [];
+    for (const e of entries) {
+      const t = e.time_unix || (e.time && toUnix(e.time)) || 0;
+      events.push({ kind: "entry", time: t, data: e });
+    }
+    for (const c of closes) {
+      const t = toUnix(c.time);
+      if (t) events.push({ kind: "close", time: t, data: c });
+    }
+    events.sort((a, b) => a.time - b.time);
+
+    // Per-side basket state: depth (count) + last entry price for spacing check
+    const state = {
+      buy:  { depth: 0, lastPrice: null },
+      sell: { depth: 0, lastPrice: null },
+    };
+
+    for (const ev of events) {
+      if (ev.kind === "entry") {
+        const e = ev.data;
+        const sideKey = (e.dir || "").toLowerCase();
+        if (sideKey !== "buy" && sideKey !== "sell") continue;
+        const s = state[sideKey];
+        const depth = s.depth;          // depth BEFORE this entry (0-indexed)
+        const tier = activeTierForDepth(tiers, depth);
+
+        // Lot expectation
+        const actualLot = e.lots;
+        const expectedLot = tier.expected_lot;
+        const lotOk = Math.abs(actualLot - expectedLot) < 0.005;
+
+        // Spacing expectation (only meaningful for non-first entries)
+        const expectedSpacing = tier.spacing_pips;
+        let actualSpacing = null, spacingOk = null;
+        if (s.lastPrice !== null) {
+          actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
+          spacingOk = Math.abs(actualSpacing - expectedSpacing) <= COMPLIANCE_SPACING_TOL_PIPS;
+        }
+
+        rows.push({
+          acct: acct.num,
+          time: ev.time,
+          side: sideKey.toUpperCase(),
+          depth: depth,             // depth-before-entry; matches engine's _active_tier(depth)
+          tier: tier.label,
+          tier_name: tier.name,
+          price: e.price,
+          actual_lot: actualLot,
+          expected_lot: expectedLot,
+          lot_ok: lotOk,
+          actual_spacing: actualSpacing,    // null for first entry of basket
+          expected_spacing: expectedSpacing,
+          spacing_ok: spacingOk,            // null for first entry of basket
+          ok: lotOk && (spacingOk === null || spacingOk),
+        });
+
+        s.depth += 1;
+        s.lastPrice = e.price;
+      } else {
+        // basket close: reset that side
+        const sideKey = (ev.data.closed_basket || "").toLowerCase();
+        if (sideKey === "buy" || sideKey === "sell") {
+          state[sideKey].depth = 0;
+          state[sideKey].lastPrice = null;
+        }
+      }
+    }
+  }
+
+  return rows;
+}
+
+const _complianceState = {
+  rows: [],
+  filtered: [],
+  sortKey: "time",
+  sortDir: 1,            // 1 = asc, -1 = desc
+  showOnlyIssues: false,
+};
+
+function renderComplianceTablePanel(bundle) {
+  const container = document.getElementById("trade-compliance");
+  if (!container) return;
+
+  const rows = buildComplianceRows(bundle);
+  _complianceState.rows = rows;
+  _complianceState.sortKey = "time";
+  _complianceState.sortDir = 1;
+  _complianceState.showOnlyIssues = false;
+
+  if (!rows.length) {
+    container.innerHTML = `<div class="placeholder">No trades found in this bundle.</div>`;
+    return;
+  }
+
+  const okCount  = rows.filter(r => r.ok).length;
+  const badCount = rows.length - okCount;
+
+  container.innerHTML = `
+    <div class="tc-header">
+      <h4>Trade Compliance</h4>
+      <span class="tc-summary">
+        <span class="ok">${okCount} OK</span> ·
+        <span class="${badCount ? 'bad' : 'muted'}">${badCount} ${badCount === 1 ? 'issue' : 'issues'}</span>
+        of ${rows.length} trades
+      </span>
+      <div class="tc-controls">
+        <button id="tc-all"    class="active">All</button>
+        <button id="tc-issues">Issues only</button>
+      </div>
+    </div>
+    <div class="tc-scroll" id="tc-scroll"></div>
+  `;
+
+  document.getElementById("tc-all").onclick = () => {
+    _complianceState.showOnlyIssues = false;
+    document.getElementById("tc-all").classList.add("active");
+    document.getElementById("tc-issues").classList.remove("active");
+    redrawComplianceBody();
+  };
+  document.getElementById("tc-issues").onclick = () => {
+    _complianceState.showOnlyIssues = true;
+    document.getElementById("tc-issues").classList.add("active");
+    document.getElementById("tc-all").classList.remove("active");
+    redrawComplianceBody();
+  };
+
+  redrawComplianceBody();
+}
+
+const TC_COLUMNS = [
+  { key: "acct",            label: "Acct",     align: "num" },
+  { key: "time",            label: "Time",     align: "left" },
+  { key: "side",            label: "Side",     align: "left" },
+  { key: "depth",           label: "Depth",    align: "num" },
+  { key: "tier",            label: "Tier",     align: "left" },
+  { key: "price",           label: "Price",    align: "num" },
+  { key: "actual_lot",      label: "Lot (act / exp)",   align: "num" },
+  { key: "actual_spacing",  label: "Spacing pips (act / exp)", align: "num" },
+  { key: "ok",              label: "OK?",      align: "left" },
+];
+
+function redrawComplianceBody() {
+  const scrollEl = document.getElementById("tc-scroll");
+  if (!scrollEl) return;
+
+  let rows = _complianceState.rows;
+  if (_complianceState.showOnlyIssues) rows = rows.filter(r => !r.ok);
+
+  // Sort
+  const k = _complianceState.sortKey;
+  const dir = _complianceState.sortDir;
+  rows = [...rows].sort((a, b) => {
+    const av = a[k], bv = b[k];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (av < bv) return -1 * dir;
+    if (av > bv) return  1 * dir;
+    return 0;
+  });
+
+  const fmtPrice = (p) => (typeof p === "number") ? p.toFixed(5) : "—";
+  const fmtLot   = (l) => (typeof l === "number") ? l.toFixed(2) : "—";
+  const fmtPips  = (p) => (typeof p === "number") ? p.toFixed(1) : "—";
+  const fmtTime  = (t) => {
+    if (!t) return "—";
+    const d = new Date(t * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  };
+
+  const headerHTML = TC_COLUMNS.map(c => {
+    const sortCls = (c.key === k) ? (dir === 1 ? "sort-asc" : "sort-desc") : "";
+    return `<th data-key="${c.key}" class="${c.align === 'num' ? 'num' : ''} ${sortCls}">${c.label}</th>`;
+  }).join("");
+
+  // Body — capped at 5000 rows for performance; filter narrows otherwise
+  const cap = 5000;
+  const slice = rows.slice(0, cap);
+
+  const bodyHTML = slice.map(r => {
+    const sideCls = r.side === "BUY" ? "side-buy" : "side-sell";
+    const lotCell = r.lot_ok
+      ? `<span class="ok">${fmtLot(r.actual_lot)}</span> <span class="delta">/ ${fmtLot(r.expected_lot)}</span>`
+      : `<span class="bad">${fmtLot(r.actual_lot)}</span> <span class="delta">/ ${fmtLot(r.expected_lot)}</span>`;
+
+    let spCell;
+    if (r.actual_spacing === null) {
+      spCell = `<span class="muted">— first of basket</span>`;
+    } else {
+      spCell = r.spacing_ok
+        ? `<span class="ok">${fmtPips(r.actual_spacing)}</span> <span class="delta">/ ${fmtPips(r.expected_spacing)}</span>`
+        : `<span class="bad">${fmtPips(r.actual_spacing)}</span> <span class="delta">/ ${fmtPips(r.expected_spacing)}</span>`;
+    }
+
+    const okCell = r.ok ? `<span class="ok">\u2713</span>` : `<span class="bad">\u2717</span>`;
+
+    return `<tr class="${r.ok ? '' : 'bad'}">
+      <td class="num">${r.acct}</td>
+      <td>${fmtTime(r.time)}</td>
+      <td class="${sideCls}">${r.side}</td>
+      <td class="num">${r.depth}</td>
+      <td>${r.tier}</td>
+      <td class="num">${fmtPrice(r.price)}</td>
+      <td class="num actual-vs-expected">${lotCell}</td>
+      <td class="num actual-vs-expected">${spCell}</td>
+      <td>${okCell}</td>
+    </tr>`;
+  }).join("");
+
+  const truncateHTML = rows.length > cap
+    ? `<tr><td colspan="9" class="muted" style="padding:8px;text-align:center">${rows.length - cap} more rows hidden — narrow with "Issues only" filter</td></tr>`
+    : "";
+
+  scrollEl.innerHTML = `
+    <table class="tc-table">
+      <thead><tr>${headerHTML}</tr></thead>
+      <tbody>${bodyHTML}${truncateHTML}</tbody>
+    </table>
+  `;
+
+  // Wire header sort
+  scrollEl.querySelectorAll("thead th").forEach(th => {
+    th.onclick = () => {
+      const newKey = th.dataset.key;
+      if (_complianceState.sortKey === newKey) {
+        _complianceState.sortDir = -_complianceState.sortDir;
+      } else {
+        _complianceState.sortKey = newKey;
+        _complianceState.sortDir = 1;
+      }
+      redrawComplianceBody();
+    };
+  });
 }
 
 // ----- investor economics -----
