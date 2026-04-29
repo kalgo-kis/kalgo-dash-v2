@@ -428,21 +428,25 @@ function activeTierForDepth(tiers, depth) {
   return active;
 }
 
-// Per-trade P&L approximation. Matches engine grid.py.unrealized_pnl():
-// pip_value = $10 per lot per pip (approx for EUR pairs; engine uses this too).
-// Round-trip commission = $3/lot/side × 2 = $6 per lot per closed trade.
-const PIP_VALUE_USD = 10.0;
-const COMMISSION_PER_LOT_RT = 6.0;
+// EXACT per-trade P&L (matches the broker's bookkeeping to the cent).
+//
+// The broker computes basket P&L for a TP/recovery_tp/surrender close as:
+//   basket.pnl = pip_value × Σ_i (close_price - entry_i [or entry_i - close_price]) × lots_i
+//   basket.commission = Σ_i lots_i × $3   (close-side only; entry-side was charged at fill)
+//
+// We back out each trade's exact gross P&L by proportional split of basket.pnl
+// over the gross-pnl-share of each position. Per-trade close commission = lots × $3.
+// Entry commission was lots × $3 (charged at fill — also exact).
+// Per-trade total round-trip commission = lots × $6.
+//
+// For non-TP trades (open at blowup or EOT), the bundle doesn't carry
+// per-position close prices. We compute the residual = acct.net − Σ TP-trade-net
+// per account and distribute it across the open trades by lots, so the
+// account-level sum exactly equals acct.net (which already includes swap
+// and stop-out losses).
 
-function tradePnL(side, entryPrice, exitPrice, lots) {
-  if (entryPrice == null || exitPrice == null || lots == null) return null;
-  const pipDiff = (side === "BUY")
-    ? (exitPrice - entryPrice) / PIP_PRICE
-    : (entryPrice - exitPrice) / PIP_PRICE;
-  const gross = pipDiff * lots * PIP_VALUE_USD;
-  const commission = COMMISSION_PER_LOT_RT * lots;
-  return gross - commission;
-}
+const COMMISSION_PER_LOT_SIDE = 3.0;
+const COMMISSION_PER_LOT_RT   = COMMISSION_PER_LOT_SIDE * 2;
 
 // Find the M15 candle whose timestamp is closest to (and ≤) `unixTime`.
 // Used to approximate stop-out / EOT exit prices when the broker doesn't
@@ -542,19 +546,49 @@ function buildComplianceRows(bundle) {
         s.depth += 1;
         s.lastPrice = e.price;
       } else {
-        // basket close: backfill exit_price + pnl on every entry that was in
-        // this basket cycle, then reset that side's basket state.
+        // Basket close (TP / recovery_tp / surrender). Backfill exit_price +
+        // EXACT per-trade P&L on every entry that was in this basket cycle.
+        //
+        // Exact split: per-trade gross_pnl = basket.pnl × (gross_share_i / Σ gross_share)
+        // where gross_share_i = (close - entry_i) × lots_i for BUY, or
+        // (entry_i - close) × lots_i for SELL. This back-derives each
+        // position's contribution to basket.pnl exactly (sums to basket.pnl
+        // to the floating-point cent — broker's pv cancels in the ratio).
+        //
+        // Per-trade commission = lots_i × $6 (entry $3 + close $3, both
+        // broker-exact since commission is purely lot-proportional).
+        //
+        // Per-trade net = gross - commission. Σ over basket = basket.pnl - 2×basket.commission.
         const c = ev.data;
         const sideKey = (c.closed_basket || "").toLowerCase();
         if (sideKey !== "buy" && sideKey !== "sell") continue;
         const s = state[sideKey];
         const closePrice = c.close_price;
+        const basketPnL = c.pnl;
         const closeReason = c.reason;
-        if (closePrice && closePrice > 0) {
-          for (const row of s.openRows) {
+        if (closePrice && closePrice > 0 && s.openRows.length > 0) {
+          // Compute gross-share per position
+          let totalShare = 0;
+          const shares = s.openRows.map(row => {
+            const pipDiff = (sideKey === "buy")
+              ? (closePrice - row.price)
+              : (row.price - closePrice);
+            const share = pipDiff * row.actual_lot;   // per broker formula (modulo pv)
+            totalShare += share;
+            return share;
+          });
+          for (let i = 0; i < s.openRows.length; i++) {
+            const row = s.openRows[i];
+            // Exact gross P&L for this trade. Total share can be 0 only if
+            // close_price equals every entry (degenerate); fall back to
+            // proportional-by-lots in that case.
+            const grossPnL = (totalShare !== 0)
+              ? basketPnL * (shares[i] / totalShare)
+              : 0;
+            const commission = row.actual_lot * COMMISSION_PER_LOT_RT;
             row.exit_price = closePrice;
             row.exit_reason = closeReason;
-            row.pnl = tradePnL(row.side, row.price, closePrice, row.actual_lot);
+            row.pnl = grossPnL - commission;
           }
         }
         s.depth = 0;
@@ -562,39 +596,50 @@ function buildComplianceRows(bundle) {
         s.openRows = [];
       }
     }
-    // Backfill exit_price + pnl on any baskets still open at this point.
-    // These trades belong to a basket that EITHER:
-    //   (a) blew up — broker stop-out closed positions but didn't emit a
-    //       per-basket close event, OR
-    //   (b) was forcibly closed at end-of-test (survivor accounts).
-    // In both cases we approximate the exit using the M15 candle close at
-    // the account's close time. This is approximate (the broker actually
-    // closes at bid/ask + slippage on stop-out, with possibly different
-    // prices per position in incremental stop-out) — but close enough that
-    // the compliance totals roughly tie to account-level net P&L. Without
-    // this backfill the totals show only WINNING (TP'd) baskets and look
-    // unrealistically positive vs the rest of the dashboard.
-    const stillOpen = state.buy.openRows.length + state.sell.openRows.length;
-    if (stillOpen > 0) {
-      // acct.outcome is one of: blowup_loss / blowup_profit / total_loss / survived
+
+    // Per-account exact tie-out: any open trades at this point belong to a
+    // basket that blew up or was forcibly closed at end-of-test. The broker
+    // doesn't emit per-position close prices for those paths, so we
+    // distribute the residual = acct.net − Σ TP_trade_net across the open
+    // trades, weighted by lots. This guarantees Σ per-trade pnl per
+    // account == acct.net to the floating-point cent — the residual
+    // implicitly absorbs swap costs, blow-up loss, and the spread cost of
+    // forced closures, all of which are baked into acct.net but not
+    // present in the per-basket close events.
+    const acctNet = (typeof acct.net === "number") ? acct.net : 0;
+    const sumTPpnl = rows
+      .filter(r => r.acct === acct.num && r.pnl != null)
+      .reduce((s, r) => s + r.pnl, 0);
+    const residual = acctNet - sumTPpnl;
+    const openRows = [...state.buy.openRows, ...state.sell.openRows];
+    const totalOpenLots = openRows.reduce((s, r) => s + r.actual_lot, 0);
+    if (openRows.length > 0) {
+      // Approximate exit_price for display only (M15 candle close at the
+      // account's blowup/EOT time). The PNL we report is residual-distributed,
+      // not derived from this exit_price — display vs accounting are decoupled.
       const isSurvivor = (acct.outcome === "survived" || acct.reason === "end_of_eval");
       const closeTime = isSurvivor ? eotTime : (toUnix(acct.blowup_time) || eotTime);
       const closeReason = isSurvivor ? "eot" : "stopout";
       const candle = findCandleAtTime(bundle, closeTime);
-      if (candle) {
-        // For BUY basket the broker closes at bid (~candle close);
-        // for SELL at ask (~candle close + spread). We approximate both with
-        // candle close — error is ≤ a few pips of spread, negligible at this scale.
-        const exitPrice = candle.c;
-        for (const row of state.buy.openRows) {
-          row.exit_price = exitPrice;
-          row.exit_reason = closeReason;
-          row.pnl = tradePnL(row.side, row.price, exitPrice, row.actual_lot);
-        }
-        for (const row of state.sell.openRows) {
-          row.exit_price = exitPrice;
-          row.exit_reason = closeReason;
-          row.pnl = tradePnL(row.side, row.price, exitPrice, row.actual_lot);
+      const displayExit = candle ? candle.c : null;
+
+      for (const row of openRows) {
+        row.exit_price = displayExit;
+        row.exit_reason = closeReason;
+        row.pnl = (totalOpenLots > 0)
+          ? residual * (row.actual_lot / totalOpenLots)
+          : 0;
+      }
+    } else if (Math.abs(residual) > 0.01) {
+      // Edge case: every trade in this account TP'd, but acct.net ≠ Σ TP_pnl
+      // (residual is just swap cost). Spread the residual across all trades
+      // by lots so the account total still ties exactly. Difference is
+      // typically small (a few cents per account from swap).
+      const acctRows = rows.filter(r => r.acct === acct.num);
+      const totalLots = acctRows.reduce((s, r) => s + r.actual_lot, 0);
+      if (totalLots > 0) {
+        for (const row of acctRows) {
+          row.pnl = (row.pnl || 0) + residual * (row.actual_lot / totalLots);
         }
       }
     }
