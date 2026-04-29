@@ -1252,6 +1252,26 @@ header .subtitle {
 }
 .tc-controls button:hover  { background: #21262d; }
 .tc-controls button.active { background: #2d4a78; border-color: #58a6ff; color: #fff; }
+.tc-controls input[type="text"] {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  width: 280px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.tc-controls input[type="text"]::placeholder { color: var(--text-muted); }
+.tc-controls input[type="text"]:focus { border-color: #58a6ff; }
+.tc-table .trade-id {
+  font-family: var(--font-mono);
+  color: #56d4dd;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
 
 .tc-scroll {
   flex: 1;

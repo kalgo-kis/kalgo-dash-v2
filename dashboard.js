@@ -479,6 +479,7 @@ function buildComplianceRows(bundle) {
         }
 
         rows.push({
+          id: e.id || "",
           acct: acct.num,
           time: ev.time,
           side: sideKey.toUpperCase(),
@@ -517,6 +518,7 @@ const _complianceState = {
   sortKey: "time",
   sortDir: 1,            // 1 = asc, -1 = desc
   showOnlyIssues: false,
+  searchTerm: "",        // case-insensitive substring match against id / acct / side / tier
 };
 
 function renderComplianceTablePanel(bundle) {
@@ -528,6 +530,7 @@ function renderComplianceTablePanel(bundle) {
   _complianceState.sortKey = "time";
   _complianceState.sortDir = 1;
   _complianceState.showOnlyIssues = false;
+  _complianceState.searchTerm = "";
 
   if (!rows.length) {
     container.innerHTML = `<div class="placeholder">No trades found in this bundle.</div>`;
@@ -540,12 +543,13 @@ function renderComplianceTablePanel(bundle) {
   container.innerHTML = `
     <div class="tc-header">
       <h4>Trade Compliance</h4>
-      <span class="tc-summary">
+      <span class="tc-summary" id="tc-summary">
         <span class="ok">${okCount} OK</span> ·
         <span class="${badCount ? 'bad' : 'muted'}">${badCount} ${badCount === 1 ? 'issue' : 'issues'}</span>
         of ${rows.length} trades
       </span>
       <div class="tc-controls">
+        <input type="text" id="tc-search" placeholder="search id / acct / basket… (e.g. A8.S3 or BUY)" />
         <button id="tc-all"    class="active">All</button>
         <button id="tc-issues">Issues only</button>
       </div>
@@ -566,11 +570,26 @@ function renderComplianceTablePanel(bundle) {
     redrawComplianceBody();
   };
 
+  // Search box: matches case-insensitively against id / acct / side / tier.
+  // Examples: "A8.S3" -> all trades in account 8's sell basket #3.
+  //           "A11"   -> all trades in account 11.
+  //           "BUY"   -> all buy entries.
+  //           "flex 3" -> all flex 3 tier trades.
+  let searchDebounce = null;
+  document.getElementById("tc-search").oninput = (ev) => {
+    const v = ev.target.value;
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      _complianceState.searchTerm = v.trim().toLowerCase();
+      redrawComplianceBody();
+    }, 80);
+  };
+
   redrawComplianceBody();
 }
 
 const TC_COLUMNS = [
-  { key: "acct",            label: "Acct",     align: "num" },
+  { key: "id",              label: "ID",       align: "left" },
   { key: "time",            label: "Time",     align: "left" },
   { key: "side",            label: "Side",     align: "left" },
   { key: "depth",           label: "Depth",    align: "num" },
@@ -587,6 +606,30 @@ function redrawComplianceBody() {
 
   let rows = _complianceState.rows;
   if (_complianceState.showOnlyIssues) rows = rows.filter(r => !r.ok);
+  if (_complianceState.searchTerm) {
+    const term = _complianceState.searchTerm;
+    rows = rows.filter(r => {
+      // Build a single haystack of fields the user might search:
+      // id, account number, side, tier label.
+      const h = (r.id + " A" + r.acct + " " + r.side + " " + r.tier).toLowerCase();
+      return h.includes(term);
+    });
+  }
+
+  // Update summary count to reflect current filter
+  const summaryEl = document.getElementById("tc-summary");
+  if (summaryEl) {
+    const okC  = rows.filter(r => r.ok).length;
+    const badC = rows.length - okC;
+    const totalRows = _complianceState.rows.length;
+    const filterNote = (rows.length !== totalRows)
+      ? ` <span class="muted">(${rows.length}/${totalRows} matching)</span>` : "";
+    summaryEl.innerHTML = (
+      `<span class="ok">${okC} OK</span> · ` +
+      `<span class="${badC ? 'bad' : 'muted'}">${badC} ${badC === 1 ? 'issue' : 'issues'}</span>` +
+      ` of ${rows.length} trades` + filterNote
+    );
+  }
 
   // Sort
   const k = _complianceState.sortKey;
@@ -638,7 +681,7 @@ function redrawComplianceBody() {
     const okCell = r.ok ? `<span class="ok">\u2713</span>` : `<span class="bad">\u2717</span>`;
 
     return `<tr class="${r.ok ? '' : 'bad'}">
-      <td class="num">${r.acct}</td>
+      <td class="trade-id">${r.id || '—'}</td>
       <td>${fmtTime(r.time)}</td>
       <td class="${sideCls}">${r.side}</td>
       <td class="num">${r.depth}</td>
@@ -1593,7 +1636,11 @@ function formatTradeTooltip(tick) {
   if (m.kind === "entry") {
     const tierLabel = TIER_LABELS[m.tier] || "?";
     const sideColor = (m.side === "BUY") ? COLORS.green : COLORS.red;
+    const idLine = m.id
+      ? `<div style="color:${COLORS.cyan};font-family:var(--font-mono),monospace;font-size:10px;margin-bottom:2px">${m.id}</div>`
+      : "";
     return (
+      idLine +
       `<div style="color:${sideColor};font-weight:600">` +
         `${m.side} entry · ${fmtLots(m.lots)} lots</div>` +
       `<div style="color:${COLORS.textMuted};margin-top:2px">` +
@@ -1727,6 +1774,7 @@ function showTraceOverlay(a) {
         color,
         meta: {
           kind: "entry",
+          id: e.id || "",
           side: isBuy ? "BUY" : "SELL",
           lots: e.lots,
           price: e.price,
