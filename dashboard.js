@@ -94,13 +94,27 @@ function fmtUnix(t) {
 }
 
 // ----- load manifest & populate selector -----
+// In harness mode (local server detected), fetch /api/manifest which combines
+// shared (dashboard_data/) + scratch (experiments/scratch/) bundles. In
+// read-only mode (live URL), fall back to the static dashboard_data/manifest.json.
 async function loadManifest() {
   setStatus("loading manifest…");
-  const resp = await fetch("dashboard_data/manifest.json");
-  if (!resp.ok) throw new Error("manifest.json not found");
-  const m = await resp.json();
+  let m = null;
+  if (state.harness) {
+    try {
+      const r = await fetch("/api/manifest");
+      if (r.ok) m = await r.json();
+    } catch { /* fall through to static */ }
+  }
+  if (!m) {
+    const resp = await fetch("dashboard_data/manifest.json");
+    if (!resp.ok) throw new Error("manifest.json not found");
+    m = await resp.json();
+  }
   state.manifest = m;
-  setStatus(`${m.count} experiments (${m.bundled_count} with rich data)`);
+  const scratchCount = (m.experiments || []).filter(e => e.source === "scratch").length;
+  const tail = scratchCount ? ` · ${scratchCount} scratch` : "";
+  setStatus(`${m.count} experiments${tail}`);
   refreshSelector();
 }
 
@@ -108,9 +122,17 @@ function getFilteredSorted() {
   const fold = document.getElementById("fold-filter").value;
   const sort = document.getElementById("sort-select").value;
   const onlyBundled = document.getElementById("only-bundled").checked;
+  // Phase 2: source filter (all / shared / scratch / by user prefix)
+  const source = document.getElementById("source-filter")?.value || "all";
+  const userPrefix = (document.getElementById("source-user-filter")?.value || "").trim().toLowerCase();
   let list = state.manifest.experiments.slice();
   if (fold !== "all") list = list.filter(e => e.fold === fold);
   if (onlyBundled) list = list.filter(e => e.bundled);
+  if (source === "shared") list = list.filter(e => e.source === "shared");
+  else if (source === "scratch") list = list.filter(e => e.source === "scratch");
+  else if (source === "user" && userPrefix) {
+    list = list.filter(e => (e.filename || "").toLowerCase().startsWith(userPrefix + "_"));
+  }
   switch (sort) {
     case "tr_desc": list.sort((a,b) => (b.total_return||0) - (a.total_return||0)); break;
     case "tr_asc":  list.sort((a,b) => (a.total_return||0) - (b.total_return||0)); break;
@@ -127,7 +149,7 @@ function refreshSelector() {
   for (const e of list) {
     const opt = document.createElement("option");
     const tr = e.total_return != null ? e.total_return.toFixed(3) + "x" : "n/a";
-    const tag = e.bundled ? "● " : "  ";
+    const tag = e.source === "scratch" ? "[scratch] " : (e.bundled ? "● " : "  ");
     opt.textContent = `${tag}[${e.fold}] ${e.experiment_id}  —  TR ${tr}  (${e.total_accounts || "?"} accts)`;
     opt.value = e.experiment_id + "||" + e.fold;
     sel.appendChild(opt);
@@ -150,19 +172,29 @@ async function loadExperiment(entry) {
     // show summary-only view
     renderSummaryOnly(entry);
     setStatus("legacy experiment — no per-account data");
+    updateBundleActions(entry);
     return;
   }
-  const resp = await fetch(`dashboard_data/${entry.experiment_id}.json`);
+  // Manifest entries from /api/manifest carry an explicit `filename` so scratch
+  // bundles (named scratch_<job_id>.json, not <experiment_id>.json) load
+  // correctly. Fall back to the legacy convention for static manifests.
+  const fname = entry.filename || `${entry.experiment_id}.json`;
+  const resp = await fetch(`dashboard_data/${fname}`);
   if (!resp.ok) {
-    setStatus(`failed to load ${entry.experiment_id}.json`);
+    setStatus(`failed to load ${fname}`);
     return;
   }
   const b = await resp.json();
   state.currentBundle = b;
+  state.currentEntry = entry;
   state.accountsById = {};
   for (const a of b.accounts) state.accountsById[a.num] = a;
   renderBundle(b);
   setStatus(`loaded: ${b.accounts.length} accounts, ${b.candles_m15.length} candles`);
+  updateBundleActions(entry);
+  // Form-as-viewer (Phase 2): populate the Run Experiment form with this
+  // bundle's params so the form is the single param surface.
+  if (state.harness) populateFormFromBundle(b);
 }
 
 // ----- render -----
@@ -269,101 +301,28 @@ function renderBundle(b) {
     }
   });
 
-  // experiment config panel
-  renderConfigPanel(b);
+  // Phase 2: experiment_config_panel removed. The form (#runner-form) is now
+  // the param viewer/editor. Compliance and notes still need to render —
+  // hooks below.
+  renderComplianceTablePanel(b);
+  loadExperimentNotes(b);
 
   // reset detail panel
   document.getElementById("detail-body").innerHTML = `<div class="placeholder">Click a deploy marker on the chart or a table row to inspect an account. ${accounts.length} accounts loaded.</div>`;
   document.getElementById("close-detail-btn").style.display = "none";
 }
 
-function renderConfigPanel(b) {
-  const configEl = document.getElementById("config-params");
-  const cfg = b.policy_config;
-  const policySource = b.policy_source || "";
-
-  if (cfg && typeof cfg === "object") {
-    configEl.innerHTML = renderStructuredConfig(cfg);
-  } else if (policySource) {
-    configEl.innerHTML = `<pre>${policySource}</pre>`;
-  } else {
-    configEl.innerHTML = `<div class="placeholder">No configuration data embedded in this experiment.</div>`;
-  }
-
-  // Compliance spreadsheet (every trade vs configured tier params)
-  renderComplianceTablePanel(b);
-
-  // Notes: load from localStorage
+// Notes: load from localStorage by experiment id. Persist on edit.
+function loadExperimentNotes(b) {
   const expId = b.experiment_id || "";
   const notesKey = `kalgo_notes_${expId}`;
   const savedNotes = localStorage.getItem(notesKey) || "";
   const notesEl = document.getElementById("experiment-notes");
+  if (!notesEl) return;
   notesEl.value = savedNotes;
   notesEl.oninput = () => {
     localStorage.setItem(notesKey, notesEl.value);
   };
-}
-
-// Section ordering and human-readable titles for the structured config panel
-const CONFIG_SECTIONS = [
-  ["strategy",       "Strategy"],
-  ["grid",           "Grid"],
-  ["risk",           "Risk & Sizing"],
-  ["withdrawal",     "Withdrawal"],
-  ["recovery",       "Recovery"],
-  ["filters",        "Filters"],
-  ["adaptive_tools", "Adaptive Tools"],
-  ["realism",        "Execution Realism"],
-];
-
-// Pretty-print a snake_case key as Title Case
-function humanizeKey(k) {
-  return String(k).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-}
-
-// Format any value for display
-function formatConfigValue(v) {
-  if (v === null || v === undefined) return "—";
-  if (typeof v === "boolean") return v ? "ON" : "OFF";
-  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/\.?0+$/, "");
-  if (Array.isArray(v)) return v.map(formatConfigValue).join(", ");
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
-}
-
-function renderStructuredConfig(cfg) {
-  const sectionOrder = new Map(CONFIG_SECTIONS);
-  const knownKeys = new Set(sectionOrder.keys());
-  // Place known sections first, then any extras
-  const allSections = [
-    ...CONFIG_SECTIONS.filter(([k]) => cfg[k]),
-    ...Object.keys(cfg).filter(k => !knownKeys.has(k) && cfg[k] && typeof cfg[k] === "object")
-      .map(k => [k, humanizeKey(k)]),
-  ];
-
-  if (allSections.length === 0) {
-    // Cfg is flat key/value, render as one section
-    return `<div class="config-section">
-      <h4>Configuration</h4>
-      <div class="config-grid">${
-        Object.entries(cfg).map(([k, v]) =>
-          `<div class="cfg-key">${humanizeKey(k)}</div><div class="cfg-val">${formatConfigValue(v)}</div>`
-        ).join("")
-      }</div>
-    </div>`;
-  }
-
-  return allSections.map(([key, title]) => {
-    const section = cfg[key];
-    if (!section || typeof section !== "object") return "";
-    const rows = Object.entries(section).map(([k, v]) =>
-      `<div class="cfg-key">${humanizeKey(k)}</div><div class="cfg-val">${formatConfigValue(v)}</div>`
-    ).join("");
-    return `<div class="config-section">
-      <h4>${title}</h4>
-      <div class="config-grid">${rows}</div>
-    </div>`;
-  }).join("");
 }
 
 // ----- Trade-Compliance Spreadsheet -----
@@ -2331,8 +2290,245 @@ function computeBasketMetrics(a) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Basket panel (Phase 2) — reconstructs basket cycles from trade IDs and
+// renders a clickable per-basket table left of the trade compliance panel.
+// Click a basket row → chart zooms to its lifetime ± 30 min padding,
+// metrics card below the table updates.
+//
+// Trade ID format from bundle.py: A{acct}.{B|S}{basket_num}.T{trade_num}
+// Example: A8.S3.T1 = account 8, sell basket #3, trade #1.
+// We parse basket_num + side from the ID, group entries, and match each
+// basket to its close event by side + chronological order.
+// ─────────────────────────────────────────────────────────────────────────
+
+// In-memory state for the currently-displayed basket panel
+const _basketState = {
+  account: null,    // the account object whose baskets are shown
+  baskets: [],      // reconstructed list, sorted by first-entry time
+  selectedKey: null, // "B3" or "S5" — currently selected basket
+};
+
+function _parseBasketKey(tradeId) {
+  // Returns {side: 'buy'|'sell', basket_num: int} or null.
+  const m = /^A\d+\.([BS])(\d+)\.T\d+$/.exec(tradeId || "");
+  if (!m) return null;
+  return {
+    side: m[1] === "B" ? "buy" : "sell",
+    basket_num: Number(m[2]),
+  };
+}
+
+function buildBasketsForAccount(acct) {
+  const out = {};
+  const entries = acct?.trace?.grid_entry_events || [];
+  for (const e of entries) {
+    const k = _parseBasketKey(e.id);
+    if (!k) continue;
+    const key = (k.side === "buy" ? "B" : "S") + k.basket_num;
+    if (!out[key]) {
+      out[key] = {
+        key,
+        side: k.side,
+        basket_num: k.basket_num,
+        entries: [],
+        close_event: null,
+      };
+    }
+    out[key].entries.push(e);
+  }
+  // Match close events by side + chronological order. basket_close_events
+  // are in time order; we shift the earliest unclaimed close into the
+  // earliest basket of that side that doesn't yet have one.
+  const list = Object.values(out).sort((a, b) =>
+    (a.basket_num - b.basket_num)
+  );
+  const closesBySide = { buy: [], sell: [] };
+  for (const c of (acct.basket_close_events || [])) {
+    const s = (c.closed_basket || "").toLowerCase();
+    if (closesBySide[s]) closesBySide[s].push(c);
+  }
+  for (const b of list) {
+    const arr = closesBySide[b.side];
+    if (arr && arr.length) b.close_event = arr.shift();
+  }
+  // Sort baskets by first-entry time so the table reads chronologically
+  return list.sort((a, b) => {
+    const ta = a.entries[0]?.time_unix || 0;
+    const tb = b.entries[0]?.time_unix || 0;
+    return ta - tb;
+  });
+}
+
+function basketMetrics(basket) {
+  if (!basket || !basket.entries.length) return null;
+  const close = basket.close_event;
+  const start = basket.entries[0].time_unix;
+  const end   = close?.time || basket.entries[basket.entries.length - 1].time_unix;
+  const lifetimeSec = Math.max(0, end - start);
+  const maxDepth = Math.max(...basket.entries.map(e => e.depth_at_entry || 0)) + 1;
+  const totalLots = basket.entries.reduce((s, e) => s + (e.lots || 0), 0);
+  const avgLot = basket.entries.length ? totalLots / basket.entries.length : 0;
+  // Sum of broker-exact pnl_net per entry (Σ for closed entries, null for
+  // still-open). For a closed basket, Σ pnl_net should equal the basket's
+  // close pnl minus its commission.
+  let netPnl = 0;
+  let allClosed = true;
+  for (const e of basket.entries) {
+    if (e.pnl_net == null) allClosed = false;
+    else netPnl += e.pnl_net;
+  }
+  return {
+    side: basket.side,
+    basket_num: basket.basket_num,
+    n_entries: basket.entries.length,
+    max_depth: maxDepth,
+    avg_lot: avgLot,
+    total_lots: totalLots,
+    close_reason: close?.reason || "(open)",
+    net_pnl: allClosed ? netPnl : null,
+    lifetime_sec: lifetimeSec,
+    start_unix: start,
+    end_unix: end,
+  };
+}
+
+function _fmtBasketDuration(seconds) {
+  if (seconds <= 0) return "—";
+  const m = seconds / 60;
+  if (m < 60) return `${m.toFixed(1)}m`;
+  const h = m / 60;
+  if (h < 24) return `${h.toFixed(1)}h`;
+  return `${(h / 24).toFixed(1)}d`;
+}
+
+function _fmtBasketTime(unix) {
+  if (!unix) return "—";
+  const d = new Date(unix * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  // Compact: MM-DD HH:MM (UTC)
+  return `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
+function renderBasketPanel(acct) {
+  const body = document.getElementById("basket-panel-body");
+  const titleEl = document.getElementById("basket-panel-title");
+  if (!body) return;
+  if (!acct) {
+    if (titleEl) titleEl.textContent = "Basket Inspector";
+    body.innerHTML = `<div class="placeholder">Select an account to see its baskets.</div>`;
+    _basketState.account = null;
+    _basketState.baskets = [];
+    _basketState.selectedKey = null;
+    return;
+  }
+  if (titleEl) titleEl.textContent = `Account #${acct.num} — Baskets`;
+  const baskets = buildBasketsForAccount(acct);
+  _basketState.account = acct;
+  _basketState.baskets = baskets;
+  _basketState.selectedKey = null;
+  if (!baskets.length) {
+    body.innerHTML = `<div class="placeholder">No basket data for this account.</div>`;
+    return;
+  }
+  const rows = baskets.map(b => {
+    const m = basketMetrics(b);
+    const reason = m.close_reason;
+    const reasonClass =
+      reason === "tp" || reason === "recovery_tp" ? "reason-tp" :
+      reason === "stopout"   ? "reason-stopout"   :
+      reason === "surrender" ? "reason-surrender" :
+                                "reason-open";
+    const pnlClass =
+      m.net_pnl == null ? "" : (m.net_pnl >= 0 ? "pnl-pos" : "pnl-neg");
+    const pnlStr = m.net_pnl == null
+      ? "—"
+      : (m.net_pnl >= 0 ? "+" : "") + fmtMoney(m.net_pnl);
+    return `<tr data-basket-key="${b.key}">
+      <td>${b.key}</td>
+      <td class="side-${b.side}">${b.side}</td>
+      <td>${_fmtBasketTime(m.start_unix)}</td>
+      <td>${_fmtBasketTime(m.end_unix)}</td>
+      <td class="${reasonClass}">${reason}</td>
+      <td class="num">${m.max_depth}</td>
+      <td class="num ${pnlClass}">${pnlStr}</td>
+    </tr>`;
+  }).join("");
+  body.innerHTML = `
+    <table class="basket-table">
+      <thead>
+        <tr>
+          <th>#</th><th>Side</th><th>Open</th><th>Close</th>
+          <th>Reason</th><th>Depth</th><th>Net P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div id="basket-metrics-card" class="basket-metrics-card" style="display:none;"></div>
+  `;
+  // Wire row clicks
+  body.querySelectorAll("tr[data-basket-key]").forEach(tr => {
+    tr.addEventListener("click", () => {
+      const key = tr.dataset.basketKey;
+      const b = _basketState.baskets.find(x => x.key === key);
+      if (b) selectBasket(b);
+    });
+  });
+}
+
+function selectBasket(basket) {
+  _basketState.selectedKey = basket.key;
+  // Highlight the selected row
+  const body = document.getElementById("basket-panel-body");
+  body?.querySelectorAll("tr[data-basket-key]").forEach(tr => {
+    tr.classList.toggle("selected", tr.dataset.basketKey === basket.key);
+  });
+  // Render metrics card
+  const m = basketMetrics(basket);
+  const card = document.getElementById("basket-metrics-card");
+  if (card && m) {
+    card.style.display = "";
+    card.innerHTML = `
+      <div class="stat"><span class="label">Basket</span><span class="value">${basket.key}</span></div>
+      <div class="stat"><span class="label">Entries</span><span class="value">${m.n_entries}</span></div>
+      <div class="stat"><span class="label">Max depth</span><span class="value">${m.max_depth}</span></div>
+      <div class="stat"><span class="label">Total lots</span><span class="value">${fmtNum(m.total_lots, 2)}</span></div>
+      <div class="stat"><span class="label">Lifetime</span><span class="value">${_fmtBasketDuration(m.lifetime_sec)}</span></div>
+      <div class="stat"><span class="label">Close reason</span><span class="value">${m.close_reason}</span></div>
+      <div class="stat"><span class="label">Net P&amp;L</span>
+        <span class="value" style="color: var(--${m.net_pnl == null ? "text-muted" : (m.net_pnl >= 0 ? "green" : "red")})">
+          ${m.net_pnl == null ? "—" : (m.net_pnl >= 0 ? "+" : "") + fmtMoney(m.net_pnl)}
+        </span></div>
+    `;
+  }
+  // Zoom chart to the basket's window with 30-min padding
+  zoomToBasket(basket);
+}
+
+function zoomToBasket(basket) {
+  if (!state.priceChart) return;
+  const m = basketMetrics(basket);
+  if (!m) return;
+  const PAD = 30 * 60;  // 30 minutes
+  const from = (m.start_unix || 0) - PAD;
+  const to   = (m.end_unix   || m.start_unix) + PAD;
+  if (from >= to) return;
+  const range = { from, to };
+  // Same _syncing pattern as zoomToAccount to avoid feedback loops
+  if (typeof state._syncing !== "undefined") state._syncing = true;
+  try {
+    state.priceChart.timeScale().setVisibleRange(range);
+    if (state.bankChart) state.bankChart.timeScale().setVisibleRange(range);
+  } finally {
+    if (typeof state._syncing !== "undefined") state._syncing = false;
+  }
+}
+
 // ----- account detail -----
 function showAccountDetail(a) {
+
+  // Phase 2: render the basket inspector for this account
+  renderBasketPanel(a);
 
   // Computed fields for detail panel
   const xr = (a.stake || 0) > 0 ? (a.withdrawn || 0) / a.stake : 0;
@@ -2589,6 +2785,8 @@ function closeDetail() {
   // Deselect table row
   document.querySelectorAll("#accounts-table tbody tr.selected").forEach(r => r.classList.remove("selected"));
   document.getElementById("close-detail-btn").style.display = "none";
+  // Phase 2: clear basket panel when account is deselected
+  renderBasketPanel(null);
 }
 
 // ----- multi-fold overview -----
@@ -2776,11 +2974,500 @@ function renderComparison() {
     </div>`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// HARNESS MODULE — local-server experiment runner
+//
+// On page load, probe /api/health. If a local Flask server is reachable,
+// reveal the Run Experiment panel (form + Run button + Discard/Share for
+// scratch bundles). On the live URL the probe times out silently and the
+// dashboard renders read-only as before.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Detect local harness with a 500ms timeout. AbortSignal.timeout is supported
+// in Chrome/Safari/Firefox 100+ — covers what we need for both Macs.
+async function detectHarness() {
+  try {
+    const r = await fetch("/api/health", { signal: AbortSignal.timeout(500) });
+    if (!r.ok) return false;
+    const j = await r.json();
+    return !!j.ok;
+  } catch { return false; }
+}
+
+let _harnessSchema = null;
+let _activeJobId = null;
+let _pollTimer = null;
+
+async function initHarness() {
+  if (!state.harness) return;
+  // Reveal harness UI
+  document.getElementById("experiment-runner").style.display = "";
+  // Pull the form schema and render
+  try {
+    const r = await fetch("/api/schema");
+    const j = await r.json();
+    _harnessSchema = j.sections;
+    renderHarnessForm(_harnessSchema);
+  } catch (e) {
+    setRunnerStatus("schema fetch failed: " + e.message);
+    return;
+  }
+  // Wire buttons
+  document.getElementById("runner-run-btn").addEventListener("click", onRunClick);
+  document.getElementById("runner-reset-btn").addEventListener("click", () => {
+    if (_harnessSchema) populateFormFromSchema(_harnessSchema);
+  });
+  document.getElementById("runner-clone-btn")?.addEventListener("click", onCloneFromLoaded);
+  document.getElementById("bundle-discard-btn")?.addEventListener("click", onDiscardClick);
+  document.getElementById("bundle-share-btn")?.addEventListener("click", onShareClick);
+  document.getElementById("push-retry-btn")?.addEventListener("click", onPushRetryClick);
+  // Initial state: defaults
+  setFormState("default");
+}
+
+function renderHarnessForm(sections) {
+  const form = document.getElementById("runner-form");
+  form.innerHTML = "";
+  for (const sec of sections) {
+    const fs = document.createElement("fieldset");
+    if (sec.readonly) fs.classList.add("readonly");
+    const lg = document.createElement("legend");
+    lg.textContent = sec.label;
+    fs.appendChild(lg);
+    if (sec.help) {
+      const help = document.createElement("div");
+      help.className = "field-help";
+      help.textContent = sec.help;
+      fs.appendChild(help);
+    }
+    for (const f of sec.fields) {
+      const row = document.createElement("div");
+      row.className = "field-row";
+      const lbl = document.createElement("label");
+      lbl.textContent = f.label;
+      lbl.htmlFor = `f-${f.id}`;
+      let inp;
+      if (f.type === "select") {
+        inp = document.createElement("select");
+        for (const opt of (f.options || [])) {
+          const o = document.createElement("option");
+          if (typeof opt === "string") {
+            o.value = opt; o.textContent = opt;
+          } else {
+            o.value = opt.value; o.textContent = opt.label || opt.value;
+          }
+          inp.appendChild(o);
+        }
+        inp.value = f.default;
+      } else if (f.type === "checkbox") {
+        inp = document.createElement("input");
+        inp.type = "checkbox";
+        inp.checked = !!f.default;
+      } else if (f.type === "textarea") {
+        inp = document.createElement("textarea");
+        inp.rows = 2;
+        inp.value = f.default || "";
+      } else {
+        inp = document.createElement("input");
+        inp.type = (f.type === "number") ? "number" : "text";
+        if (f.step != null) inp.step = f.step;
+        if (f.min != null)  inp.min  = f.min;
+        if (f.max != null)  inp.max  = f.max;
+        inp.value = f.default ?? "";
+      }
+      // Per-field readonly support: if the section is readonly, the input is
+      // disabled (still readable, never sent in /api/run because readHarnessForm
+      // skips disabled inputs — see implementation note).
+      if (sec.readonly || f.readonly) inp.disabled = true;
+      inp.id = `f-${f.id}`;
+      inp.dataset.fid = f.id;
+      inp.dataset.ftype = f.type;
+      // Hook for the viewing/modified state machine
+      inp.addEventListener("input", _onFormFieldChanged);
+      inp.addEventListener("change", _onFormFieldChanged);
+      row.appendChild(lbl);
+      row.appendChild(inp);
+      if (f.help) {
+        const fhelp = document.createElement("div");
+        fhelp.className = "field-help";
+        fhelp.textContent = f.help;
+        row.appendChild(fhelp);
+      }
+      fs.appendChild(row);
+    }
+    form.appendChild(fs);
+  }
+}
+
+function readHarnessForm() {
+  const out = {};
+  // Skip disabled inputs (readonly fields) — they're for display only and
+  // sending them would let users override server-side hardcoded realism.
+  const inputs = document.querySelectorAll("#runner-form [data-fid]:not(:disabled)");
+  for (const el of inputs) {
+    const k = el.dataset.fid;
+    const t = el.dataset.ftype;
+    if (t === "checkbox")      out[k] = el.checked;
+    else if (t === "number")   out[k] = el.value === "" ? null : Number(el.value);
+    else                        out[k] = el.value;
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Form-as-viewer: populate the form from a loaded bundle's policy_config.
+// Read direction only — write happens via readHarnessForm() at Run time.
+//
+// Form-state machine: on bundle load, form is in "viewing" state (tinted
+// blue, chip = "Viewing: <experiment_id>"). Any user edit drops to "modified"
+// state (tint cleared, chip = "Modified — Run will use these new params").
+// "Reset to defaults" returns to schema defaults. "Clone from loaded" goes
+// back to the loaded bundle's params and stays in "modified" so Run uses them.
+// ─────────────────────────────────────────────────────────────────────────
+
+// form-id → function(bundle) returning the value to set. Single source of
+// truth for bidirectional mapping. Form-id missing from this map → field
+// keeps schema default when populating from a bundle.
+const BUNDLE_TO_FORM_MAP = {
+  // identity
+  name:        b => b.experiment_label || b.experiment_id || "",
+  notes:       b => b.policy_config?.strategy?.notes || "",
+  hypothesis:  b => b.policy_config?.strategy?.hypothesis || "",
+  // fold
+  fold:        b => b.fold,
+  // base_tier
+  grid_pips:        b => b.policy_config?.base_tier?.spacing_pips,
+  tp_pips:          b => b.policy_config?.base_tier?.tp_pips,
+  lot_size:         b => b.policy_config?.grid?.lot_size_base,
+  lot_curve_type:   b => b.policy_config?.grid?.lot_curve_type,
+  max_levels:       b => b.policy_config?.grid?.max_levels,
+  direction:        b => b.policy_config?.grid?.direction,
+  // flex tiers
+  flex1_enabled:    b => !!b.policy_config?.flex_tier_1,
+  flex1_after:      b => b.policy_config?.flex_tier_1?.activates_at_depth,
+  flex1_spacing:    b => b.policy_config?.flex_tier_1?.spacing_pips,
+  flex1_tp:         b => b.policy_config?.flex_tier_1?.tp_pips,
+  flex1_mult:       b => b.policy_config?.flex_tier_1?.lot_multiplier,
+  flex2_enabled:    b => !!b.policy_config?.flex_tier_2,
+  flex2_after:      b => b.policy_config?.flex_tier_2?.activates_at_depth,
+  flex2_spacing:    b => b.policy_config?.flex_tier_2?.spacing_pips,
+  flex2_tp:         b => b.policy_config?.flex_tier_2?.tp_pips,
+  flex2_mult:       b => b.policy_config?.flex_tier_2?.lot_multiplier,
+  flex3_enabled:    b => !!b.policy_config?.flex_tier_3,
+  flex3_after:      b => b.policy_config?.flex_tier_3?.activates_at_depth,
+  flex3_spacing:    b => b.policy_config?.flex_tier_3?.spacing_pips,
+  flex3_tp:         b => b.policy_config?.flex_tier_3?.tp_pips,
+  flex3_mult:       b => b.policy_config?.flex_tier_3?.lot_multiplier,
+  // risk
+  starting_capital:        b => b.policy_config?.risk?.starting_capital,
+  stake_per_account:       b => b.policy_config?.risk?.stake_per_account,
+  min_deploy_pool:         b => b.policy_config?.risk?.min_deploy_pool,
+  max_concurrent_accounts: b => b.policy_config?.risk?.max_concurrent_accounts,
+  cooldown_days:           b => b.policy_config?.risk?.cooldown_days_after_blowup,
+  // filters
+  rollover_filter:         b => b.policy_config?.filters?.rollover_filter,
+  // withdrawal — bundle doesn't carry target_balance directly; parse from
+  // logic string ("Withdraw everything above $1000 ...") with a fallback.
+  withdrawal_target_balance: b => {
+    const logic = b.policy_config?.withdrawal?.logic || "";
+    const m = /\$([\d,]+)/.exec(logic);
+    return m ? Number(m[1].replace(/,/g, "")) : 1000;
+  },
+  // recovery
+  recovery_d_pips:           b => b.policy_config?.recovery?.displacement_threshold_pips,
+  recovery_tp_pips:          b => b.policy_config?.recovery?.recovery_tp_pips,
+  recovery_risk_pct:         b => b.policy_config?.recovery?.recovery_risk_pct,
+  recovery_max_adverse_pips: b => b.policy_config?.recovery?.recovery_max_adverse_pips,
+  // adaptive
+  phase1_model:       b => b.policy_config?.adaptive_tools?.phase1_model || "",
+  prob_table_active:  b => !!b.policy_config?.adaptive_tools?.prob_table_active,
+  regime_classifier:  b => b.policy_config?.adaptive_tools?.regime_classifier || "",
+  // realism (display-only — no user-editable fields, but populated for visibility)
+  leverage:                       b => b.policy_config?.risk?.leverage_implied,
+  commission_per_lot_per_side_usd: b => b.policy_config?.realism?.commission_per_lot_per_side_usd,
+};
+
+let _formStateSuppressEvents = false;
+
+function _setFormFieldValue(fid, val) {
+  const el = document.getElementById(`f-${fid}`);
+  if (!el) return;
+  if (val == null) return;  // leave existing value alone
+  if (el.type === "checkbox") el.checked = !!val;
+  else el.value = val;
+}
+
+function populateFormFromBundle(bundle) {
+  if (!bundle) return;
+  _formStateSuppressEvents = true;
+  try {
+    for (const [fid, getter] of Object.entries(BUNDLE_TO_FORM_MAP)) {
+      try {
+        const v = getter(bundle);
+        _setFormFieldValue(fid, v);
+      } catch { /* skip missing paths */ }
+    }
+  } finally {
+    _formStateSuppressEvents = false;
+  }
+  setFormState("viewing", bundle.experiment_label || bundle.experiment_id);
+}
+
+function _onFormFieldChanged() {
+  if (_formStateSuppressEvents) return;
+  if (state._formMode === "viewing") setFormState("modified");
+}
+
+// Populate the form from a JS schema dict (used by Reset).
+function populateFormFromSchema(schema) {
+  if (!schema) return;
+  _formStateSuppressEvents = true;
+  try {
+    for (const sec of schema) {
+      for (const f of sec.fields) {
+        _setFormFieldValue(f.id, f.default);
+      }
+    }
+  } finally {
+    _formStateSuppressEvents = false;
+  }
+  setFormState("default");
+}
+
+function setFormState(mode, label) {
+  const form = document.getElementById("runner-form");
+  const chip = document.getElementById("form-state-chip");
+  state._formMode = mode;
+  if (!form) return;
+  form.classList.remove("viewing", "modified");
+  if (mode === "viewing") {
+    form.classList.add("viewing");
+    if (chip) {
+      chip.textContent = `Viewing: ${label || "loaded experiment"}`;
+      chip.dataset.state = "viewing";
+    }
+  } else if (mode === "modified") {
+    form.classList.add("modified");
+    if (chip) {
+      chip.textContent = "Modified — Run will use these params";
+      chip.dataset.state = "modified";
+    }
+  } else {
+    if (chip) {
+      chip.textContent = "Defaults — edit and Run";
+      chip.dataset.state = "default";
+    }
+  }
+}
+
+function onCloneFromLoaded() {
+  if (!state.currentBundle) {
+    setStatus("No bundle loaded to clone from.");
+    return;
+  }
+  populateFormFromBundle(state.currentBundle);
+  // Switch to "modified" — user wants to edit, not just view
+  setFormState("modified");
+}
+
+async function onRunClick() {
+  const btn = document.getElementById("runner-run-btn");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  setRunnerStatus("running");
+  setRunnerProgress("submitting…");
+  let resp;
+  try {
+    const payload = readHarnessForm();
+    const r = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    resp = await r.json();
+    if (!r.ok) throw new Error(resp.error || `HTTP ${r.status}`);
+  } catch (e) {
+    setRunnerStatus("error");
+    setRunnerProgress(e.message);
+    btn.disabled = false;
+    return;
+  }
+  _activeJobId = resp.job_id;
+  pollJob(resp.job_id);
+}
+
+function pollJob(jobId) {
+  clearTimeout(_pollTimer);
+  _pollTimer = setTimeout(async () => {
+    let j;
+    try {
+      const r = await fetch(`/api/job/${jobId}`);
+      j = await r.json();
+    } catch {
+      _pollTimer = setTimeout(() => pollJob(jobId), 2000);
+      return;
+    }
+    setRunnerProgress(`${j.elapsed_seconds || 0}s — ${j.message || "…"}`);
+    if (j.status === "done") {
+      setRunnerStatus("done");
+      document.getElementById("runner-run-btn").disabled = false;
+      _activeJobId = null;
+      // Refresh manifest, then auto-load the new bundle
+      await loadManifest();
+      const newEntry = (state.manifest.experiments || []).find(
+        e => e.experiment_id === j.bundle_id
+      );
+      if (newEntry) {
+        document.getElementById("experiment-select").value =
+          newEntry.experiment_id + "||" + newEntry.fold;
+        loadExperiment(newEntry);
+      }
+    } else if (j.status === "error") {
+      setRunnerStatus("error");
+      setRunnerProgress(j.error || "(no error message)");
+      document.getElementById("runner-run-btn").disabled = false;
+      _activeJobId = null;
+    } else {
+      pollJob(jobId);
+    }
+  }, 2000);
+}
+
+function setRunnerStatus(s) {
+  const el = document.getElementById("runner-status");
+  if (el) {
+    el.textContent = s;
+    el.dataset.state = s;
+  }
+}
+function setRunnerProgress(s) {
+  const el = document.getElementById("runner-progress");
+  if (el) el.textContent = s;
+}
+
+// ----- Bundle action UI (Discard / Share / Push pending) -----
+function updateBundleActions(entry) {
+  const wrap = document.getElementById("bundle-actions");
+  if (!wrap) return;
+  if (state.harness && entry && entry.source === "scratch") {
+    wrap.style.display = "";
+  } else {
+    wrap.style.display = "none";
+  }
+  // Push-pending badge is independent — always hidden until a share
+  // returns committed=true, pushed=false. UI clears it on retry success.
+  document.getElementById("push-pending-badge").style.display = "none";
+}
+
+async function onDiscardClick() {
+  const entry = state.currentEntry;
+  if (!entry || entry.source !== "scratch") return;
+  if (!confirm(`Discard ${entry.experiment_id}? This cannot be undone.`)) return;
+  try {
+    const r = await fetch("/api/discard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundle_id: entry.experiment_id }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  } catch (e) {
+    setStatus("discard failed: " + e.message);
+    return;
+  }
+  state.currentEntry = null;
+  await loadManifest();
+}
+
+async function onShareClick() {
+  const entry = state.currentEntry;
+  if (!entry || entry.source !== "scratch" || !_activeJobId === null) {
+    // _activeJobId is the LAST run's job_id; we need it to map back to scratch file.
+  }
+  // We use the job_id encoded in scratch_<job_id> to identify the bundle.
+  // entry.experiment_id == 'scratch_<job_id>'.
+  const jobId = entry.experiment_id.startsWith("scratch_")
+    ? entry.experiment_id.slice("scratch_".length)
+    : null;
+  if (!jobId) {
+    setStatus("share: cannot determine job_id");
+    return;
+  }
+  const defaultName = (() => {
+    const lab = state.currentBundle?.experiment_label || "";
+    return lab && !lab.startsWith("scratch ") ? lab : "";
+  })();
+  const name = prompt("Name for shared experiment:", defaultName);
+  if (!name) return;
+  setStatus("sharing…");
+  let r, j;
+  try {
+    r = await fetch("/api/share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: jobId, name }),
+    });
+    j = await r.json();
+  } catch (e) {
+    setStatus("share failed: " + e.message);
+    return;
+  }
+  if (!r.ok || !j.committed) {
+    setStatus("share failed: " + (j.error || "unknown"));
+    return;
+  }
+  if (!j.pushed) {
+    document.getElementById("push-pending-badge").style.display = "";
+    setStatus(`shared locally — push pending (${j.error || "auth?"})`);
+  } else {
+    setStatus(`shared: ${j.bundle_filename}`);
+  }
+  state.currentEntry = null;
+  await loadManifest();
+  // Try to auto-select the newly-shared bundle
+  const newEntry = (state.manifest.experiments || []).find(
+    e => e.filename === j.bundle_filename
+  );
+  if (newEntry) {
+    document.getElementById("experiment-select").value =
+      newEntry.experiment_id + "||" + newEntry.fold;
+    loadExperiment(newEntry);
+  }
+}
+
+async function onPushRetryClick() {
+  setStatus("retrying push…");
+  try {
+    const r = await fetch("/api/share/push-pending", { method: "POST" });
+    const j = await r.json();
+    if (j.pushed) {
+      document.getElementById("push-pending-badge").style.display = "none";
+      setStatus("push successful");
+    } else {
+      setStatus("push still failing: " + (j.error || "?"));
+    }
+  } catch (e) {
+    setStatus("retry failed: " + e.message);
+  }
+}
+
 // ----- events -----
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("fold-filter").addEventListener("change", refreshSelector);
   document.getElementById("sort-select").addEventListener("change", refreshSelector);
   document.getElementById("only-bundled").addEventListener("change", refreshSelector);
+  // Phase 2: source filter
+  const srcFilter = document.getElementById("source-filter");
+  const srcUserInp = document.getElementById("source-user-filter");
+  if (srcFilter) {
+    srcFilter.addEventListener("change", () => {
+      if (srcUserInp) srcUserInp.style.display = srcFilter.value === "user" ? "" : "none";
+      refreshSelector();
+    });
+  }
+  if (srcUserInp) {
+    srcUserInp.addEventListener("input", refreshSelector);
+  }
   document.getElementById("experiment-select").addEventListener("change", (e) => {
     const [id, fold] = e.target.value.split("||");
     const entry = state.manifest.experiments.find(x => x.experiment_id === id && x.fold === fold);
@@ -2802,8 +3489,14 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Escape") closeDetail();
   });
 
-  loadManifest().catch(err => {
-    setStatus("error: " + err.message);
-    console.error(err);
+  // Detect local harness BEFORE loading manifest so loadManifest() picks
+  // /api/manifest over the static dashboard_data/manifest.json.
+  detectHarness().then(async (ok) => {
+    state.harness = ok;
+    if (ok) await initHarness();
+    loadManifest().catch(err => {
+      setStatus("error: " + err.message);
+      console.error(err);
+    });
   });
 });

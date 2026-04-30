@@ -1142,8 +1142,7 @@ header .subtitle {
    Notes section
    ================================================================= */
 .notes-section { margin: var(--s-3) 0; }
-.notes-section textarea,
-.config-notes textarea {
+.notes-section textarea {
   width: 100%;
   min-height: 60px;
   background: var(--surface2);
@@ -1158,42 +1157,184 @@ header .subtitle {
   outline: none;
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.notes-section textarea:focus,
-.config-notes textarea:focus {
+.notes-section textarea:focus {
   border-color: var(--blue-muted);
   box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.12);
 }
-.notes-section textarea::placeholder,
-.config-notes textarea::placeholder {
+.notes-section textarea::placeholder {
   color: var(--text-faint);
 }
 
 /* =================================================================
-   Experiment config panel (bottom of page)
+   Phase 2: Inspection section (basket panel + compliance side-by-side)
+   and Research Notes section. Replaces the old experiment-config-panel
+   layout — params now live in the Run Experiment form at top of page.
    ================================================================= */
-.experiment-config-panel {
+.inspection-section {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr;
+  gap: var(--s-3);
+  margin-bottom: var(--s-4);
+}
+.inspection-section .panel {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  padding: var(--s-4) var(--s-5);
-  margin-bottom: var(--s-4);
+  padding: var(--s-4);
   box-shadow: var(--shadow-sm);
+  min-height: 360px;
+  max-height: 720px;
+  display: flex;
+  flex-direction: column;
 }
-.experiment-config-panel .panel-title {
-  font-size: var(--fs-md);
-  letter-spacing: -0.01em;
+.inspection-section .panel > .panel-title {
+  margin-bottom: var(--s-3);
+  padding-bottom: var(--s-2);
+  border-bottom: 1px solid var(--border-subtle);
 }
-.config-layout {
+.inspection-section #compliance-panel { padding: 0; overflow: hidden; }
+.inspection-section #compliance-panel > .panel-title {
+  padding: var(--s-3) var(--s-4);
+  margin: 0;
+}
+
+#basket-panel-body { flex: 1; overflow: auto; }
+#basket-panel-body .placeholder {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--s-3) var(--s-2);
+}
+.basket-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.basket-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.basket-table tbody td {
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(48,54,61,0.5);
+  white-space: nowrap;
+  color: var(--text);
+  vertical-align: top;
+}
+.basket-table tbody tr { cursor: pointer; transition: background var(--dur-fast) var(--ease); }
+.basket-table tbody tr:hover    { background: rgba(88,166,255,0.06); }
+.basket-table tbody tr.selected { background: rgba(88,166,255,0.18); outline: 1px solid #58a6ff; }
+.basket-table .num   { text-align: right; font-variant-numeric: tabular-nums; }
+.basket-table .side-buy  { color: #56d364; font-weight: 600; }
+.basket-table .side-sell { color: #f85149; font-weight: 600; }
+.basket-table .pnl-pos { color: #56d364; }
+.basket-table .pnl-neg { color: #f85149; }
+.basket-table .reason-tp        { color: #56d364; }
+.basket-table .reason-stopout   { color: #f85149; }
+.basket-table .reason-surrender { color: #d29922; }
+.basket-table .reason-open      { color: var(--text-muted); }
+
+.basket-metrics-card {
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  background: var(--surface2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
   display: grid;
-  grid-template-columns: 1fr 2fr;
-  grid-template-areas:
-    "config compliance"
-    "notes  notes";
-  gap: var(--s-5);
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--s-2) var(--s-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
 }
-.config-params      { grid-area: config; }
-.trade-compliance   { grid-area: compliance; }
-.config-notes       { grid-area: notes; }
+.basket-metrics-card .stat .label {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.basket-metrics-card .stat .value {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.research-notes-section { margin-bottom: var(--s-4); }
+.research-notes-section .panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--s-4);
+}
+.research-notes-section textarea {
+  width: 100%;
+  min-height: 100px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: var(--s-3);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  resize: vertical;
+  outline: none;
+}
+.research-notes-section textarea:focus {
+  border-color: var(--blue-muted);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.12);
+}
+
+/* Form-state machine: viewing → modified → default visual states */
+.experiment-runner .form-state-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.04);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+.experiment-runner .form-state-chip[data-state="viewing"] {
+  color: #58a6ff;
+  background: rgba(88,166,255,0.08);
+  border-color: #2d4a78;
+}
+.experiment-runner .form-state-chip[data-state="modified"] {
+  color: #d29922;
+  background: rgba(210,153,34,0.10);
+  border-color: #6b4f10;
+}
+#runner-form.viewing fieldset {
+  border-color: rgba(88,166,255,0.30);
+  background: rgba(88,166,255,0.02);
+}
+
+/* Readonly form sections — visually distinct, non-editable */
+#runner-form fieldset.readonly { opacity: 0.78; }
+#runner-form fieldset.readonly input,
+#runner-form fieldset.readonly select,
+#runner-form fieldset.readonly textarea {
+  cursor: not-allowed;
+  background: var(--surface2);
+}
+#runner-form .field-help {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-style: italic;
+}
 
 /* ── Trade-Compliance Spreadsheet ─────────────────────────────────────── */
 .trade-compliance {
@@ -1338,94 +1479,8 @@ header .subtitle {
 .tc-table .muted                   { color: var(--text-muted); }
 .tc-table .actual-vs-expected      { font-variant-numeric: tabular-nums; }
 .tc-table .delta                   { color: var(--text-muted); font-size: 10px; }
-.config-params { font-size: var(--fs-sm); }
-.config-params pre {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--text);
-  background: var(--surface2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  padding: var(--s-3);
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.65;
-}
-
-/* Structured config sections */
-.config-params .config-section {
-  background: linear-gradient(180deg, var(--surface2) 0%, #191e26 100%);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  padding: var(--s-3) var(--s-4);
-  margin-bottom: var(--s-3);
-  transition: border-color var(--dur-fast) var(--ease);
-}
-.config-params .config-section:hover {
-  border-color: var(--border);
-}
-.config-params .config-section h4 {
-  font-size: var(--fs-2xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-wider);
-  color: var(--cyan);
-  font-weight: 700;
-  margin: 0 0 var(--s-2) 0;
-  padding-bottom: var(--s-2);
-  border-bottom: 1px solid var(--border-subtle);
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-.config-params .config-section h4::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--cyan);
-  box-shadow: 0 0 8px rgba(86, 212, 221, 0.5);
-}
-.config-params .config-grid {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: var(--s-5);
-  row-gap: 5px;
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-.config-params .cfg-key {
-  color: var(--text-muted);
-  white-space: nowrap;
-  font-weight: 400;
-}
-.config-params .cfg-val {
-  color: var(--text);
-  word-break: break-word;
-  text-align: right;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-}
-.config-notes .notes-label {
-  font-size: var(--fs-3xs);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-wider);
-  color: var(--text-muted);
-  font-weight: 700;
-  margin-bottom: var(--s-2);
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-.config-notes .notes-label::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--purple);
-  box-shadow: 0 0 8px rgba(188, 140, 255, 0.5);
-}
-.config-notes textarea { min-height: 180px; }
+/* (Phase 2: removed .config-params / .config-notes / .cfg-key / .cfg-val
+   styles — the static config panel was replaced by the Run Experiment form.) */
 
 /* =================================================================
    Native tooltips for table columns — custom-styled via :title
@@ -1436,7 +1491,7 @@ header .subtitle {
    Responsive
    ================================================================= */
 @media (max-width: 1400px) {
-  .config-layout { grid-template-columns: 1fr; }
+  .inspection-section { grid-template-columns: 1fr; }
   .fleet-summary .metric.primary .metric-value { font-size: var(--fs-xl); }
 }
 @media (max-width: 1100px) {
@@ -1445,4 +1500,149 @@ header .subtitle {
   .accounts-section { grid-template-columns: 1fr; }
   .selector-bar .large-select { min-width: 260px; }
   .detail-meta { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Harness experiment runner ─────────────────────────────────────────── */
+.harness-banner {
+  background: #4a3a1a;
+  border: 1px solid #b08a30;
+  color: #f0d28a;
+  padding: 8px 14px;
+  border-radius: 6px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.experiment-runner {
+  background: var(--surface, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  margin: 0 0 16px;
+  padding: 14px 18px;
+}
+.experiment-runner .runner-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+.experiment-runner .panel-title {
+  font-weight: 600; font-size: 15px;
+}
+.experiment-runner .runner-status {
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 12px;
+  color: var(--text-muted, #8b949e);
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.04);
+}
+.experiment-runner .runner-status[data-state="running"] { color: #e3b341; background: rgba(227,179,65,0.10); }
+.experiment-runner .runner-status[data-state="done"]    { color: #3fb950; background: rgba(63,185,80,0.10); }
+.experiment-runner .runner-status[data-state="error"]   { color: #f85149; background: rgba(248,81,73,0.12); }
+
+.experiment-runner .runner-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.experiment-runner fieldset {
+  border: 1px solid var(--border-subtle, #21262d);
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  margin: 0;
+}
+.experiment-runner legend {
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--text-muted, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.experiment-runner .field-row {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-bottom: 8px;
+}
+.experiment-runner .field-row:last-child { margin-bottom: 0; }
+.experiment-runner .field-row label {
+  font-size: 11px;
+  color: var(--text-muted, #8b949e);
+}
+.experiment-runner input[type="text"],
+.experiment-runner input[type="number"],
+.experiment-runner select,
+.experiment-runner textarea {
+  background: #0d1117;
+  border: 1px solid var(--border, #30363d);
+  color: var(--text, #e6edf3);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 5px 8px;
+  border-radius: 4px;
+}
+.experiment-runner input[type="checkbox"] {
+  width: 16px; height: 16px;
+  accent-color: #3fb950;
+}
+.experiment-runner textarea { resize: vertical; min-height: 38px; }
+
+.experiment-runner .runner-actions {
+  display: flex; align-items: center; gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle, #21262d);
+}
+.experiment-runner button {
+  background: #1f2933;
+  border: 1px solid var(--border, #30363d);
+  color: var(--text, #e6edf3);
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.experiment-runner button:hover { background: #2a3441; }
+.experiment-runner button.primary {
+  background: #2ea043; border-color: #2ea043; color: white; font-weight: 600;
+}
+.experiment-runner button.primary:hover:not(:disabled) { background: #3fb950; }
+.experiment-runner button:disabled { opacity: 0.4; cursor: not-allowed; }
+.experiment-runner .runner-progress {
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 12px;
+  color: var(--text-muted, #8b949e);
+  flex: 1;
+  text-align: right;
+}
+
+/* ── Bundle action buttons (Discard / Share / Push pending) ──────────── */
+.bundle-actions {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 12px;
+}
+.action-btn {
+  background: #1f2933;
+  border: 1px solid var(--border, #30363d);
+  color: var(--text, #e6edf3);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.action-btn:hover { background: #2a3441; }
+.action-btn.share { background: #2ea043; border-color: #2ea043; color: white; }
+.action-btn.share:hover { background: #3fb950; }
+.action-btn.discard { background: rgba(248,81,73,0.10); border-color: #6b1f1f; color: #f85149; }
+.action-btn.discard:hover { background: rgba(248,81,73,0.20); }
+.push-pending {
+  background: #4a3a1a;
+  color: #f0d28a;
+  border: 1px solid #b08a30;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.push-pending .action-btn {
+  padding: 2px 8px; font-size: 11px;
+  background: transparent; border-color: #b08a30; color: #f0d28a;
 }

@@ -28,6 +28,27 @@
   </header>
 
   <div class="container">
+    <section class="harness-banner" id="harness-banner" style="display:none;">
+      <span id="harness-banner-text"></span>
+    </section>
+
+    <section class="experiment-runner" id="experiment-runner" style="display:none;">
+      <div class="runner-header">
+        <span class="panel-title">Run Experiment</span>
+        <span class="form-state-chip" id="form-state-chip" data-state="default">Defaults — edit and Run</span>
+        <span class="runner-status" id="runner-status">idle</span>
+      </div>
+      <div class="runner-body">
+        <form id="runner-form" class="runner-form"></form>
+        <div class="runner-actions">
+          <button type="button" id="runner-run-btn" class="primary">Run</button>
+          <button type="button" id="runner-clone-btn" title="Copy params from the currently-loaded experiment back into the form for editing">Clone from loaded</button>
+          <button type="button" id="runner-reset-btn">Reset to defaults</button>
+          <span class="runner-progress" id="runner-progress"></span>
+        </div>
+      </div>
+    </section>
+
     <section class="selector-bar">
       <label>Experiment</label>
       <select id="experiment-select" class="large-select"></select>
@@ -47,6 +68,14 @@
         <option value="tr_asc">total return ↑</option>
         <option value="recent">most recent</option>
       </select>
+      <label>Source</label>
+      <select id="source-filter">
+        <option value="all">all</option>
+        <option value="shared">shared only</option>
+        <option value="scratch">my scratch</option>
+        <option value="user">by user…</option>
+      </select>
+      <input id="source-user-filter" type="text" placeholder="user prefix" style="display:none;width:140px;">
       <label class="checkbox-label">
         <input type="checkbox" id="only-bundled" />
         bundled only
@@ -57,6 +86,14 @@
       </label>
       <select id="compare-select" class="large-select" style="display:none;"></select>
       <button id="reset-zoom-btn">Reset Zoom</button>
+      <span id="bundle-actions" class="bundle-actions" style="display:none;">
+        <button id="bundle-discard-btn" class="action-btn discard">Discard</button>
+        <button id="bundle-share-btn" class="action-btn share">Share</button>
+        <span id="push-pending-badge" class="push-pending" style="display:none;">
+          push pending
+          <button id="push-retry-btn" class="action-btn">Retry</button>
+        </span>
+      </span>
     </section>
 
     <section class="multifold-overview" id="multifold-overview" style="display:none;">
@@ -157,21 +194,27 @@
       </div>
     </section>
 
-    <section class="experiment-config-panel" id="experiment-config-panel">
-      <div class="panel-title">
-        <span>Experiment Configuration</span>
+    <section class="inspection-section">
+      <div class="panel" id="basket-panel">
+        <div class="panel-title">
+          <span id="basket-panel-title">Basket Inspector</span>
+        </div>
+        <div id="basket-panel-body" class="placeholder">Select an account to see its baskets.</div>
       </div>
-      <div class="config-layout">
-        <div class="config-params" id="config-params">
-          <div class="placeholder">Load an experiment to see its configuration</div>
+      <div class="panel" id="compliance-panel">
+        <div class="panel-title">
+          <span>Trade Compliance</span>
         </div>
         <div class="trade-compliance" id="trade-compliance">
           <div class="placeholder">Trade-by-trade compliance with the configuration. Issues are highlighted; click any column header to sort.</div>
         </div>
-        <div class="config-notes">
-          <div class="notes-label">Research Notes</div>
-          <textarea id="experiment-notes" placeholder="Add observations about this experiment..."></textarea>
-        </div>
+      </div>
+    </section>
+
+    <section class="research-notes-section">
+      <div class="panel">
+        <div class="panel-title"><span>Research Notes</span></div>
+        <textarea id="experiment-notes" placeholder="Add observations about this experiment..."></textarea>
       </div>
     </section>
   </div>
