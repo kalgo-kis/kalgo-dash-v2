@@ -601,7 +601,7 @@ function renderComplianceTablePanel(bundle) {
         of ${rows.length} trades
       </span>
       <div class="tc-controls">
-        <input type="text" id="tc-search" placeholder="search id / acct / basket… (e.g. A8.S3 or BUY)" />
+        <input type="text" id="tc-search" placeholder="search id / acct / basket… (e.g. A9.B5 or BUY)" />
         <button id="tc-all"    class="active">All</button>
         <button id="tc-issues">Issues only</button>
       </div>
@@ -2493,6 +2493,7 @@ function renderBasketPanel(acct) {
     _basketState.account = null;
     _basketState.baskets = [];
     _basketState.selectedKey = null;
+    hideBasketBreakEvenLine();
     return;
   }
   if (titleEl) titleEl.textContent = `Account #${acct.num} — Baskets`;
@@ -2576,25 +2577,91 @@ function selectBasket(basket) {
   }
   // Zoom chart to the basket's window with 30-min padding
   zoomToBasket(basket);
+  // Filter the compliance table to this basket's trades
+  filterComplianceToBasket(basket);
+  // Plot the basket's break-even (WAPP) stair-step on the price chart
+  showBasketBreakEvenLine(basket);
 }
 
-function zoomToBasket(basket) {
-  if (!state.priceChart) return;
-  const m = basketMetrics(basket);
-  if (!m) return;
-  const PAD = 30 * 60;  // 30 minutes
-  const from = (m.start_unix || 0) - PAD;
-  const to   = (m.end_unix   || m.start_unix) + PAD;
-  if (from >= to) return;
-  const range = { from, to };
-  // Same _syncing pattern as zoomToAccount to avoid feedback loops
-  if (typeof state._syncing !== "undefined") state._syncing = true;
-  try {
-    state.priceChart.timeScale().setVisibleRange(range);
-    if (state.bankChart) state.bankChart.timeScale().setVisibleRange(range);
-  } finally {
-    if (typeof state._syncing !== "undefined") state._syncing = false;
+// Filter the trade-compliance spreadsheet to one basket's trades by
+// driving the existing search box. Reuses the existing search machinery
+// so showOnlyIssues + sort all keep working.
+function filterComplianceToBasket(basket) {
+  const inp = document.getElementById("tc-search");
+  if (!inp) return;
+  // Match every trade in this basket: account, basket. Trade IDs after
+  // renumberTradeIDs are A{acct}.B{basket_num}.T{N}.
+  const acct = _basketState.account;
+  if (!acct) return;
+  const term = `A${acct.num}.B${basket.basket_num}.`;
+  inp.value = term;
+  // Synthesize the input event so the existing debounce + redraw runs.
+  inp.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+// Stair-step line series showing the basket's WAPP (weighted-average
+// position price) — gross break-even. Each new fill recomputes the level.
+// For BUY baskets, the basket goes profitable when price > WAPP; for SELL,
+// when price < WAPP. The basket TP is WAPP ± tier.tp_pips.
+function showBasketBreakEvenLine(basket) {
+  hideBasketBreakEvenLine();
+  if (!state.priceChart || !basket?.entries?.length) return;
+  // Sorted entries (renumberTradeIDs already sorts by time, but be safe).
+  const entries = basket.entries.slice().sort((a, b) =>
+    (a.time_unix || 0) - (b.time_unix || 0));
+  // Stair-step: WAPP holds constant from each entry until the next one,
+  // then jumps. lightweight-charts lineType=2 gives stepped rendering.
+  let totalLots = 0;
+  let weightedSum = 0;
+  const points = [];
+  for (const e of entries) {
+    const lots = e.lots || 0;
+    if (lots <= 0) continue;
+    totalLots  += lots;
+    weightedSum += (e.price || 0) * lots;
+    const wapp = totalLots > 0 ? weightedSum / totalLots : 0;
+    points.push({ time: e.time_unix, value: Number(wapp.toFixed(5)) });
   }
+  if (!points.length) return;
+  // Extend the line to the basket close (or last entry time + small pad)
+  // so the level is visible all the way to the right edge of the zoom.
+  const lastEntryTime = entries[entries.length - 1].time_unix;
+  const closeTime = basket.close_event?.time || lastEntryTime;
+  if (closeTime > lastEntryTime) {
+    points.push({ time: closeTime, value: points[points.length - 1].value });
+  }
+  // Color: green for buys (price needs to rise to break even), red for sells.
+  const color = basket.side === "buy" ? "#56d364" : "#f85149";
+  const series = state.priceChart.addLineSeries({
+    color, lineWidth: 2, lineStyle: 0,
+    priceLineVisible: false, lastValueVisible: true,
+    title: `B${basket.basket_num} break-even (WAPP)`,
+    crosshairMarkerVisible: false,
+  });
+  // lineType: 2 = WithSteps (stair-step); supported by lightweight-charts 4.x.
+  // If unsupported, falls back gracefully to standard line.
+  try { series.applyOptions({ lineType: 2 }); } catch {}
+  series.setData(points);
+  state._basketBreakEvenSeries = series;
+}
+
+function hideBasketBreakEvenLine() {
+  if (state._basketBreakEvenSeries && state.priceChart) {
+    try { state.priceChart.removeSeries(state._basketBreakEvenSeries); }
+    catch {}
+  }
+  state._basketBreakEvenSeries = null;
+}
+
+async function zoomToBasket(basket) {
+  // Basket zoom is intentionally disabled in this build. The price chart's
+  // setVisibleRange gets silently clamped after the M1 trace-overlay swap
+  // (the swap leaves barSpacing at a small value that the chart refuses to
+  // expand programmatically). Filtering the compliance table to one basket
+  // and the break-even WAPP line on the chart are sufficient to inspect a
+  // basket without zoom. Reset Zoom button still works for full-fold view.
+  // TODO: re-add basket zoom once the deeper barSpacing issue is fixed.
+  return;
 }
 
 // ----- account detail -----
