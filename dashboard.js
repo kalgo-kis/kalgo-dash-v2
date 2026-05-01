@@ -2603,16 +2603,42 @@ function filterComplianceToBasket(basket) {
 // position price) — gross break-even. Each new fill recomputes the level.
 // For BUY baskets, the basket goes profitable when price > WAPP; for SELL,
 // when price < WAPP. The basket TP is WAPP ± tier.tp_pips.
+//
+// IMPORTANT: every WAPP point's `time` must already exist in the candle
+// series. Lightweight Charts treats added-series timestamps as logical
+// data — adding points outside the candle series' time domain extends the
+// chart's implied range and breaks setVisibleRange/setVisibleLogicalRange
+// silently. We snap each WAPP timestamp to the nearest candle time.
 function showBasketBreakEvenLine(basket) {
   hideBasketBreakEvenLine();
   if (!state.priceChart || !basket?.entries?.length) return;
   // Sorted entries (renumberTradeIDs already sorts by time, but be safe).
   const entries = basket.entries.slice().sort((a, b) =>
     (a.time_unix || 0) - (b.time_unix || 0));
+  // Build a sorted candle-time array we can snap against.
+  let candleTimes = state._m1CandleTimes;
+  if (!candleTimes?.length && state.candleSeries?.data) {
+    try {
+      candleTimes = state.candleSeries.data().map(c => c.time);
+    } catch { candleTimes = []; }
+  }
+  if (!candleTimes?.length) return;
+  // Snap a target time to the nearest candle time at or BEFORE it (so the
+  // line "starts" at the candle the entry filled on).
+  const snapTo = (t) => {
+    let lo = 0, hi = candleTimes.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (candleTimes[mid] <= t) lo = mid + 1;
+      else hi = mid;
+    }
+    return candleTimes[Math.max(0, lo - 1)];
+  };
   // Stair-step: WAPP holds constant from each entry until the next one,
-  // then jumps. lightweight-charts lineType=2 gives stepped rendering.
+  // then jumps. Lightweight Charts lineType=2 gives stepped rendering.
   let totalLots = 0;
   let weightedSum = 0;
+  const seenTimes = new Set();
   const points = [];
   for (const e of entries) {
     const lots = e.lots || 0;
@@ -2620,26 +2646,41 @@ function showBasketBreakEvenLine(basket) {
     totalLots  += lots;
     weightedSum += (e.price || 0) * lots;
     const wapp = totalLots > 0 ? weightedSum / totalLots : 0;
-    points.push({ time: e.time_unix, value: Number(wapp.toFixed(5)) });
+    let t = snapTo(e.time_unix);
+    // Guarantee strict monotonic time — Lightweight Charts requires it.
+    while (seenTimes.has(t)) {
+      // Bump to the next candle if we collided with one already used
+      const idx = candleTimes.indexOf(t);
+      if (idx < 0 || idx >= candleTimes.length - 1) break;
+      t = candleTimes[idx + 1];
+    }
+    seenTimes.add(t);
+    points.push({ time: t, value: Number(wapp.toFixed(5)) });
   }
   if (!points.length) return;
-  // Extend the line to the basket close (or last entry time + small pad)
-  // so the level is visible all the way to the right edge of the zoom.
-  const lastEntryTime = entries[entries.length - 1].time_unix;
-  const closeTime = basket.close_event?.time || lastEntryTime;
-  if (closeTime > lastEntryTime) {
-    points.push({ time: closeTime, value: points[points.length - 1].value });
+  // Extend the line to the basket close so the level reads all the way
+  // to the right edge of the zoom window.
+  const lastEntryTime = points[points.length - 1].time;
+  const closeRawTime = basket.close_event?.time;
+  if (closeRawTime && closeRawTime > lastEntryTime) {
+    let closeT = snapTo(closeRawTime);
+    if (closeT > lastEntryTime && !seenTimes.has(closeT)) {
+      points.push({ time: closeT, value: points[points.length - 1].value });
+    }
   }
-  // Color: green for buys (price needs to rise to break even), red for sells.
-  const color = basket.side === "buy" ? "#56d364" : "#f85149";
+  // Lighter, more transparent color so it doesn't visually compete with
+  // candles + entry markers. Green for buys, red for sells.
+  const color = basket.side === "buy"
+    ? "rgba(86, 211, 100, 0.55)"   // pale green
+    : "rgba(248, 81,  73, 0.55)";  // pale red
   const series = state.priceChart.addLineSeries({
-    color, lineWidth: 2, lineStyle: 0,
+    color, lineWidth: 1, lineStyle: 0,
     priceLineVisible: false, lastValueVisible: true,
     title: `B${basket.basket_num} break-even (WAPP)`,
     crosshairMarkerVisible: false,
   });
-  // lineType: 2 = WithSteps (stair-step); supported by lightweight-charts 4.x.
-  // If unsupported, falls back gracefully to standard line.
+  // lineType: 2 = WithSteps (stair-step). Falls back to plain line if
+  // the LWC version doesn't support it.
   try { series.applyOptions({ lineType: 2 }); } catch {}
   series.setData(points);
   state._basketBreakEvenSeries = series;
@@ -2653,14 +2694,15 @@ function hideBasketBreakEvenLine() {
   state._basketBreakEvenSeries = null;
 }
 
-async function zoomToBasket(basket) {
-  // Basket zoom is intentionally disabled in this build. The price chart's
-  // setVisibleRange gets silently clamped after the M1 trace-overlay swap
-  // (the swap leaves barSpacing at a small value that the chart refuses to
-  // expand programmatically). Filtering the compliance table to one basket
-  // and the break-even WAPP line on the chart are sufficient to inspect a
-  // basket without zoom. Reset Zoom button still works for full-fold view.
-  // TODO: re-add basket zoom once the deeper barSpacing issue is fixed.
+function zoomToBasket(basket) {
+  // Basket-window zoom is currently disabled. The price chart's
+  // setVisibleRange / setVisibleLogicalRange / scrollToPosition / fitContent
+  // calls all return without actually moving the chart's time scale —
+  // verified by direct API calls in the browser console (the requested
+  // range and the actual reported range are different, no errors thrown).
+  // This affects the existing zoomToAccount too. The same snap-to-candle
+  // safeguard for showBasketBreakEvenLine is in place; re-enabling this
+  // function alone won't fix it. Tracking as a separate investigation.
   return;
 }
 
