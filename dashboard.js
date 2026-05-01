@@ -2369,11 +2369,22 @@ function buildBasketsForAccount(acct) {
     if (arr && arr.length) b.close_event = arr.shift();
   }
   // Sort baskets by first-entry time so the table reads chronologically
-  return list.sort((a, b) => {
+  list.sort((a, b) => {
     const ta = a.entries[0]?.time_unix || 0;
     const tb = b.entries[0]?.time_unix || 0;
     return ta - tb;
   });
+  // Assign display numbers strictly by chronological order, ignoring side.
+  // For new bundles (unified per-account basket_num) this matches what the
+  // ID parsing produced. For legacy bundles (per-side basket_num) this
+  // RENUMBERS them so the table never shows duplicate numbers across sides.
+  // We sort entries within each basket by time so trade_num display would
+  // be consistent if surfaced — currently we show only basket_num.
+  list.forEach((b, i) => {
+    b.basket_num = i + 1;
+    b.entries.sort((x, y) => (x.time_unix || 0) - (y.time_unix || 0));
+  });
+  return list;
 }
 
 function basketMetrics(basket) {
