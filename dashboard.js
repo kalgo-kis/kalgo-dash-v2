@@ -185,6 +185,20 @@ async function loadExperiment(entry) {
     return;
   }
   const b = await resp.json();
+  // Reset transient view state from the PREVIOUS bundle before swapping.
+  // Without this, viewing an account in M1 + trace mode then switching to
+  // a different experiment leaves the old M1 candles, trace overlay
+  // canvas, and tier-shaded markers visible while the new bundle's
+  // accounts/metrics render — looks broken (no candles, blowup/withdrawal
+  // markers from prior account still drawn).
+  if (state._isM1Active || state.traceActive) {
+    try { clearTraceOverlay(); } catch {}
+    try { switchToM15(); } catch {}
+  }
+  // Reset basket panel + break-even line + form-state — these are bound
+  // to the prior bundle's account selection and don't apply to the new one.
+  hideBasketBreakEvenLine();
+  renderBasketPanel(null);
   state.currentBundle = b;
   state.currentEntry = entry;
   state.accountsById = {};
