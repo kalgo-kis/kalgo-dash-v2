@@ -2648,7 +2648,8 @@ function showBasketBreakEvenLine(basket) {
     return candleTimes[Math.max(0, lo - 1)];
   };
   // Stair-step: WAPP holds constant from each entry until the next one,
-  // then jumps. Lightweight Charts lineType=2 gives stepped rendering.
+  // then jumps. Lightweight Charts lineType=1 gives WithSteps rendering
+  // (horizontal segments with vertical jumps at each data point).
   let totalLots = 0;
   let weightedSum = 0;
   const seenTimes = new Set();
@@ -2692,9 +2693,10 @@ function showBasketBreakEvenLine(basket) {
     title: `B${basket.basket_num} break-even (WAPP)`,
     crosshairMarkerVisible: false,
   });
-  // lineType: 2 = WithSteps (stair-step). Falls back to plain line if
-  // the LWC version doesn't support it.
-  try { series.applyOptions({ lineType: 2 }); } catch {}
+  // lineType: 1 = WithSteps in Lightweight Charts 4.x — horizontal
+  // segments with vertical jumps. (lineType: 2 is Curved, which was
+  // wrong before and gave a sloped line through points.)
+  try { series.applyOptions({ lineType: 1 }); } catch {}
   series.setData(points);
   state._basketBreakEvenSeries = series;
 }
@@ -2962,8 +2964,9 @@ async function switchToM1(a) {
   // Swap the candle series data
   state.candleSeries.setData(m1Candles);
 
-  // Update the chart header
-  const header = document.querySelector(".chart-title");
+  // Update the chart header (price-chart-title specifically, NOT the
+  // multifold-overview title which also has class "chart-title")
+  const header = document.getElementById("price-chart-title");
   if (header) header.textContent = "EURGBP (M1) · Account #" + a.num;
 }
 
@@ -2985,7 +2988,7 @@ function switchToM15() {
   applyMarkersForVisibleRange();
 
   // Restore header
-  const header = document.querySelector(".chart-title");
+  const header = document.getElementById("price-chart-title");
   if (header) header.textContent = "EURGBP (M15) · Accounts overlay";
 
   state.priceChart.timeScale().fitContent();

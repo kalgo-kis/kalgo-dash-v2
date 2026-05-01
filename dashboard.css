@@ -590,6 +590,22 @@ header .subtitle {
 .leg-dash.purple { color: rgba(188, 140, 255, 0.7); }
 .leg-arrow.purple { color: var(--purple, #bc8cff); }
 .leg-arrow.gold { color: var(--gold); }
+.leg-arrow.green-pale { color: rgba(86, 211, 100, 0.55); }
+.leg-arrow.red-pale   { color: rgba(248, 81, 73, 0.55); }
+
+/* Tier-shaded entry markers — show a gradient from base (light) to flex 3 (dark) */
+.leg-tier {
+  display: inline-block;
+  font-size: var(--fs-xs);
+  letter-spacing: -1px;
+  font-weight: bold;
+  background: linear-gradient(90deg, var(--from-color) 0%, var(--to-color) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.leg-tier.buy  { --from-color: #a8e6b0; --to-color: #1f6f2a; }
+.leg-tier.sell { --from-color: #ffb3ab; --to-color: #8b1414; }
 
 .chart {
   height: 480px;

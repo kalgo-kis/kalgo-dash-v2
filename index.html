@@ -137,17 +137,20 @@
 
     <section class="chart-section">
       <div class="chart-header">
-        <span class="chart-title">EURGBP (M15) · Accounts overlay</span>
+        <span class="chart-title" id="price-chart-title">EURGBP (M15) · Accounts overlay</span>
         <span class="chart-legend">
           <span class="leg-arrow green">―</span> account (profit)
           <span class="leg-arrow red">―</span> account (loss)
           <span class="leg-arrow gray">―</span> account (total loss)
           &nbsp;|&nbsp;
-          <span class="leg-arrow green">―</span> BUY entry
-          <span class="leg-arrow red">―</span> SELL entry
-          <span class="leg-arrow blue">―</span> BUY TP
-          <span class="leg-arrow purple">―</span> SELL TP
+          <span class="leg-tier buy">▲</span> BUY entry (shaded by tier)
+          <span class="leg-tier sell">▼</span> SELL entry (shaded by tier)
+          <span class="leg-arrow blue">●</span> BUY TP close
+          <span class="leg-arrow purple">●</span> SELL TP close
           <span class="leg-arrow gold">&#9660;</span> withdrawal
+          &nbsp;|&nbsp;
+          <span class="leg-arrow green-pale">―</span> BUY break-even (WAPP)
+          <span class="leg-arrow red-pale">―</span> SELL break-even (WAPP)
         </span>
       </div>
       <div id="price-chart" class="chart"></div>
