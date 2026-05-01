@@ -1038,12 +1038,25 @@ function clearCharts() {
   }
   state._bandsCanvas = null;
 
+  // Properly dispose Lightweight Charts instances. innerHTML="" alone leaves
+  // the chart objects + their canvases + their event subscribers alive in
+  // JS memory. On repeated loads this accumulates ghost charts that all
+  // respond to the same global state, intercepting setVisibleRange calls.
+  // chart.remove() is the documented cleanup API.
+  if (state.priceChart) {
+    try { state.priceChart.remove(); } catch {}
+  }
+  if (state.bankChart) {
+    try { state.bankChart.remove(); } catch {}
+  }
   const pc = document.getElementById("price-chart");
   const bc = document.getElementById("bank-chart");
-  pc.innerHTML = ""; bc.innerHTML = "";
+  if (pc) pc.innerHTML = "";
+  if (bc) bc.innerHTML = "";
   state.priceChart = null; state.bankChart = null;
   state.candleSeries = null; state.bankSeries = null;
   state.hwmSeries = null;
+  state._basketBreakEvenSeries = null;
   state.markerIndex = {};
   state.fullPriceRange = null;
 }
@@ -2695,15 +2708,63 @@ function hideBasketBreakEvenLine() {
 }
 
 function zoomToBasket(basket) {
-  // Basket-window zoom is currently disabled. The price chart's
-  // setVisibleRange / setVisibleLogicalRange / scrollToPosition / fitContent
-  // calls all return without actually moving the chart's time scale —
-  // verified by direct API calls in the browser console (the requested
-  // range and the actual reported range are different, no errors thrown).
-  // This affects the existing zoomToAccount too. The same snap-to-candle
-  // safeguard for showBasketBreakEvenLine is in place; re-enabling this
-  // function alone won't fix it. Tracking as a separate investigation.
-  return;
+  if (!state.priceChart) return;
+  const m = basketMetrics(basket);
+  if (!m) return;
+  const PAD = 30 * 60;  // 30 minutes either side
+  const fromT = (m.start_unix || 0) - PAD;
+  const toT   = (m.end_unix   || m.start_unix) + PAD;
+  if (fromT >= toT) return;
+  // Force barSpacing wide enough that the requested window fills the canvas.
+  // Without this, the chart's current barSpacing (often 0.026 px/bar after
+  // an M1 swap) means an N-minute window only renders N×0.026 pixels — the
+  // chart silently rejects sub-pixel ranges and stays put. zoomToAccount
+  // historically had this same bug; we fix both paths via _zoomChartTo.
+  _zoomChartTo(fromT, toT);
+}
+
+// Reusable time-window zoom that resets barSpacing so the chart actually
+// renders the requested range. Used by zoomToBasket and zoomToAccount.
+function _zoomChartTo(fromT, toT) {
+  if (!state.priceChart || !state.candleSeries) return;
+  if (fromT >= toT) return;
+  // Find candle indices for from/to so we know how many bars are in the
+  // requested window. barSpacing must give that many bars × spacing >=
+  // canvas width (otherwise the window collapses to sub-pixel).
+  const data = state.candleSeries.data();
+  if (!data?.length) return;
+  const findIdx = (t) => {
+    let lo = 0, hi = data.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (data[mid].time < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  const fromIdx = Math.max(0, findIdx(fromT));
+  const toIdx   = Math.min(data.length - 1, findIdx(toT));
+  if (toIdx <= fromIdx) return;
+  const visibleBars = toIdx - fromIdx;
+  const canvasWidth = state.priceChart.options().width || 1432;
+  const targetSpacing = Math.max(1, canvasWidth / visibleBars);
+  state._syncing = true;
+  state.priceChart.timeScale().applyOptions({ barSpacing: targetSpacing });
+  state.priceChart.timeScale().setVisibleRange({ from: fromT, to: toT });
+  if (state.bankChart) {
+    try {
+      state.bankChart.timeScale().applyOptions({ barSpacing: targetSpacing });
+      state.bankChart.timeScale().setVisibleRange({ from: fromT, to: toT });
+    } catch {}
+  }
+  // Hold _syncing across a few frames so async subscribers see the lock.
+  let frames = 0;
+  const release = () => {
+    frames++;
+    if (frames < 4) requestAnimationFrame(release);
+    else state._syncing = false;
+  };
+  requestAnimationFrame(release);
 }
 
 // ----- account detail -----
@@ -2935,11 +2996,9 @@ function zoomToAccount(a) {
   const to = accountEndTime(a);
   if (!from || !to) return;
   const pad = Math.max(3600, (to - from) * 0.15);
-  const range = { from: from - pad, to: to + pad };
-  state._syncing = true;
-  try { state.priceChart.timeScale().setVisibleRange(range); } catch (e) {}
-  try { state.bankChart.timeScale().setVisibleRange(range); } catch (e) {}
-  state._syncing = false;
+  // Use _zoomChartTo so barSpacing is reset for the requested window.
+  // Plain setVisibleRange silently fails when barSpacing is too small.
+  _zoomChartTo(from - pad, to + pad);
 }
 
 function navigateAccount(currentNum, dir) {
