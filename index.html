@@ -32,23 +32,6 @@
       <span id="harness-banner-text"></span>
     </section>
 
-    <section class="experiment-runner" id="experiment-runner" style="display:none;">
-      <div class="runner-header">
-        <span class="panel-title">Run Experiment</span>
-        <span class="form-state-chip" id="form-state-chip" data-state="default">Defaults — edit and Run</span>
-        <span class="runner-status" id="runner-status">idle</span>
-      </div>
-      <div class="runner-body">
-        <form id="runner-form" class="runner-form"></form>
-        <div class="runner-actions">
-          <button type="button" id="runner-run-btn" class="primary">Run</button>
-          <button type="button" id="runner-clone-btn" title="Copy params from the currently-loaded experiment back into the form for editing">Clone from loaded</button>
-          <button type="button" id="runner-reset-btn">Reset to defaults</button>
-          <span class="runner-progress" id="runner-progress"></span>
-        </div>
-      </div>
-    </section>
-
     <section class="selector-bar">
       <label>Experiment</label>
       <select id="experiment-select" class="large-select"></select>
@@ -215,6 +198,23 @@
       <div class="panel">
         <div class="panel-title"><span>Research Notes</span></div>
         <textarea id="experiment-notes" placeholder="Add observations about this experiment..."></textarea>
+      </div>
+    </section>
+
+    <section class="experiment-runner" id="experiment-runner" style="display:none;">
+      <div class="runner-header">
+        <span class="panel-title">Run Experiment</span>
+        <span class="form-state-chip" id="form-state-chip" data-state="default">Defaults — edit and Run</span>
+        <span class="runner-status" id="runner-status">idle</span>
+      </div>
+      <div class="runner-body">
+        <form id="runner-form" class="runner-form"></form>
+        <div class="runner-actions">
+          <button type="button" id="runner-run-btn" class="primary">Run</button>
+          <button type="button" id="runner-clone-btn" title="Copy params from the currently-loaded experiment back into the form for editing">Clone from loaded</button>
+          <button type="button" id="runner-reset-btn">Reset to defaults</button>
+          <span class="runner-progress" id="runner-progress"></span>
+        </div>
       </div>
     </section>
   </div>

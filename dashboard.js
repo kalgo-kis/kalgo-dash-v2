@@ -2309,23 +2309,39 @@ const _basketState = {
   selectedKey: null, // "B3" or "S5" — currently selected basket
 };
 
-function _parseBasketKey(tradeId) {
+function _parseBasketKey(tradeId, entrySide) {
   // Returns {side: 'buy'|'sell', basket_num: int} or null.
-  const m = /^A\d+\.([BS])(\d+)\.T\d+$/.exec(tradeId || "");
-  if (!m) return null;
-  return {
-    side: m[1] === "B" ? "buy" : "sell",
-    basket_num: Number(m[2]),
-  };
+  // Two ID formats supported:
+  //   Current  A{acct}.B{basket_num}.T{trade_num}  (side from entry.side)
+  //   Legacy   A{acct}.{B|S}{basket_num}.T{trade_num}  (side from letter)
+  // Distinguishing rule: in the legacy format basket_num was per-side, in
+  // the current format it's unified per-account. Either way, the parser
+  // returns the side from whichever signal is present.
+  let m = /^A\d+\.B(\d+)\.T\d+$/.exec(tradeId || "");
+  if (m) {
+    // Current format — needs side from the entry record.
+    const side = (entrySide || "").toLowerCase();
+    if (side !== "buy" && side !== "sell") return null;
+    return { side, basket_num: Number(m[1]) };
+  }
+  m = /^A\d+\.S(\d+)\.T\d+$/.exec(tradeId || "");
+  if (m) {
+    // Legacy: explicit "S" letter encodes sell-side.
+    return { side: "sell", basket_num: Number(m[1]) };
+  }
+  return null;
 }
 
 function buildBasketsForAccount(acct) {
   const out = {};
   const entries = acct?.trace?.grid_entry_events || [];
   for (const e of entries) {
-    const k = _parseBasketKey(e.id);
+    const k = _parseBasketKey(e.id, e.dir || e.side);
     if (!k) continue;
-    const key = (k.side === "buy" ? "B" : "S") + k.basket_num;
+    // Key includes side so legacy bundles (per-side basket numbering — could
+    // collide on basket_num across BUY and SELL) stay distinct. Current-format
+    // bundles never collide because basket_num is unified per account.
+    const key = `${k.side}_${k.basket_num}`;
     if (!out[key]) {
       out[key] = {
         key,
@@ -2445,7 +2461,7 @@ function renderBasketPanel(acct) {
       ? "—"
       : (m.net_pnl >= 0 ? "+" : "") + fmtMoney(m.net_pnl);
     return `<tr data-basket-key="${b.key}">
-      <td>${b.key}</td>
+      <td class="num">${b.basket_num}</td>
       <td class="side-${b.side}">${b.side}</td>
       <td>${_fmtBasketTime(m.start_unix)}</td>
       <td>${_fmtBasketTime(m.end_unix)}</td>
@@ -2489,7 +2505,7 @@ function selectBasket(basket) {
   if (card && m) {
     card.style.display = "";
     card.innerHTML = `
-      <div class="stat"><span class="label">Basket</span><span class="value">${basket.key}</span></div>
+      <div class="stat"><span class="label">Basket</span><span class="value">#${basket.basket_num} <span style="color:var(--text-muted);font-weight:400;">(${basket.side})</span></span></div>
       <div class="stat"><span class="label">Entries</span><span class="value">${m.n_entries}</span></div>
       <div class="stat"><span class="label">Max depth</span><span class="value">${m.max_depth}</span></div>
       <div class="stat"><span class="label">Total lots</span><span class="value">${fmtNum(m.total_lots, 2)}</span></div>
