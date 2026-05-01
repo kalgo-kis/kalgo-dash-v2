@@ -189,6 +189,10 @@ async function loadExperiment(entry) {
   state.currentEntry = entry;
   state.accountsById = {};
   for (const a of b.accounts) state.accountsById[a.num] = a;
+  // Phase 2: renumber trade IDs into the unified `A{acct}.B{N}.T{N}` format
+  // (chronological per-account, side-agnostic). Affects every consumer of
+  // entry.id: compliance table, chart hover, search, basket-panel display.
+  renumberTradeIDs(b);
   renderBundle(b);
   setStatus(`loaded: ${b.accounts.length} accounts, ${b.candles_m15.length} candles`);
   updateBundleActions(entry);
@@ -2308,6 +2312,48 @@ const _basketState = {
   baskets: [],      // reconstructed list, sorted by first-entry time
   selectedKey: null, // "B3" or "S5" — currently selected basket
 };
+
+// One-shot pass at bundle load time: rewrite every entry's trade `id` into
+// the unified `A{acct}.B{N}.T{N}` format where N is the chronological
+// per-account sequence number (side-agnostic). Two reasons:
+//   1. Legacy bundles use per-side IDs (B1 + S1 collide on basket_num=1).
+//   2. We want a single global numbering so the compliance table, chart
+//      hover, and basket panel all show the same number for the same basket.
+// After this runs, _parseBasketKey reads side from entry.dir/side rather
+// than the ID letter (since the new IDs always start with "B").
+function renumberTradeIDs(bundle) {
+  for (const acct of bundle.accounts || []) {
+    const entries = acct?.trace?.grid_entry_events || [];
+    if (!entries.length) continue;
+    // Group entries by their existing basket key (handles both legacy and
+    // current ID formats).
+    const groups = {};
+    for (const e of entries) {
+      const k = _parseBasketKey(e.id, e.dir || e.side);
+      if (!k) continue;
+      const key = `${k.side}_${k.basket_num}`;
+      if (!groups[key]) groups[key] = { side: k.side, entries: [] };
+      groups[key].entries.push(e);
+    }
+    // Sort each basket's entries by time so trade_num is in fill order.
+    for (const g of Object.values(groups)) {
+      g.entries.sort((x, y) => (x.time_unix || 0) - (y.time_unix || 0));
+      g.firstTime = g.entries[0]?.time_unix || 0;
+    }
+    // Sort baskets chronologically by first-entry time, then by side as
+    // tiebreaker (deterministic when buy + sell open on the same bar).
+    const sorted = Object.values(groups).sort((a, b) =>
+      a.firstTime - b.firstTime || (a.side === "buy" ? -1 : 1)
+    );
+    // Rewrite e.id with new basket_num + trade_num.
+    sorted.forEach((g, basketIdx) => {
+      const newBasketNum = basketIdx + 1;
+      g.entries.forEach((e, tradeIdx) => {
+        e.id = `A${acct.num}.B${newBasketNum}.T${tradeIdx + 1}`;
+      });
+    });
+  }
+}
 
 function _parseBasketKey(tradeId, entrySide) {
   // Returns {side: 'buy'|'sell', basket_num: int} or null.
