@@ -3843,6 +3843,45 @@ async function onPushRetryClick() {
   }
 }
 
+// Pull newly-shared experiments from GitHub. Only meaningful in harness
+// mode (the live URL has nothing to pull). Refreshes the manifest after
+// a successful pull so any new bundles appear in the dropdown.
+async function onPullSharedClick() {
+  if (!state.harness) {
+    setStatus("Pull shared is only available with the local harness running.");
+    return;
+  }
+  const btn = document.getElementById("pull-shared-btn");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Pulling…";
+  setStatus("pulling shared experiments…");
+  try {
+    const r = await fetch("/api/pull-shared", { method: "POST" });
+    const j = await r.json();
+    if (!j.ok) {
+      setStatus("pull failed: " + (j.error || "unknown"));
+      return;
+    }
+    if (j.already_up_to_date) {
+      setStatus("already up to date — nothing new shared");
+      return;
+    }
+    // Refresh the manifest so new bundles appear
+    await loadManifest();
+    const n = j.new_bundle_count || 0;
+    setStatus(n === 1
+      ? "pulled 1 new shared experiment"
+      : `pulled ${n} new shared experiments`);
+  } catch (e) {
+    setStatus("pull failed: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
 // ----- events -----
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("fold-filter").addEventListener("change", refreshSelector);
@@ -3866,6 +3905,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (entry) loadExperiment(entry);
   });
   document.getElementById("reset-zoom-btn").addEventListener("click", resetZoom);
+  document.getElementById("pull-shared-btn")?.addEventListener("click", onPullSharedClick);
   document.getElementById("close-detail-btn").addEventListener("click", closeDetail);
   // Compare mode
   document.getElementById("compare-mode").addEventListener("change", (e) => {
