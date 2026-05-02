@@ -3843,43 +3843,75 @@ async function onPushRetryClick() {
   }
 }
 
-// Pull newly-shared experiments from GitHub. Only meaningful in harness
-// mode (the live URL has nothing to pull). Refreshes the manifest after
-// a successful pull so any new bundles appear in the dropdown.
-async function onPullSharedClick() {
+// One-click full update: pull both repos (dash + platform). If platform
+// code changed, server auto-restarts (the wrapper-loop respawns Python).
+// We poll /api/health until the server is back, then hard-reload the page
+// so the user gets the latest UI bundle.
+async function onUpdateDashboardClick() {
   if (!state.harness) {
-    setStatus("Pull shared is only available with the local harness running.");
+    setStatus("Update is only available when the local harness is running.");
     return;
   }
-  const btn = document.getElementById("pull-shared-btn");
+  const btn = document.getElementById("update-dashboard-btn");
   if (!btn || btn.disabled) return;
   btn.disabled = true;
   const originalText = btn.textContent;
-  btn.textContent = "Pulling…";
-  setStatus("pulling shared experiments…");
+  btn.textContent = "Updating…";
+  setStatus("checking for updates…");
+  let resp;
   try {
-    const r = await fetch("/api/pull-shared", { method: "POST" });
-    const j = await r.json();
-    if (!j.ok) {
-      setStatus("pull failed: " + (j.error || "unknown"));
-      return;
-    }
-    if (j.already_up_to_date) {
-      setStatus("already up to date — nothing new shared");
-      return;
-    }
-    // Refresh the manifest so new bundles appear
-    await loadManifest();
-    const n = j.new_bundle_count || 0;
-    setStatus(n === 1
-      ? "pulled 1 new shared experiment"
-      : `pulled ${n} new shared experiments`);
+    const r = await fetch("/api/update-dashboard", { method: "POST" });
+    resp = await r.json();
   } catch (e) {
-    setStatus("pull failed: " + e.message);
-  } finally {
+    setStatus("update failed: " + e.message);
     btn.disabled = false;
     btn.textContent = originalText;
+    return;
   }
+  // Surface partial errors (one repo pulled, the other failed) but keep going
+  const errors = [];
+  if (resp.platform && !resp.platform.ok) errors.push("platform: " + resp.platform.error);
+  if (resp.dash && !resp.dash.ok) errors.push("dash: " + resp.dash.error);
+  if (errors.length) {
+    setStatus("update issues — " + errors.join("; "));
+    btn.disabled = false;
+    btn.textContent = originalText;
+    return;
+  }
+  if (!resp.any_change) {
+    setStatus("already up to date");
+    btn.disabled = false;
+    btn.textContent = originalText;
+    // Still refresh the manifest in case shared bundles arrived between
+    // commit checks (rare, but harmless).
+    try { await loadManifest(); } catch {}
+    return;
+  }
+  // Something changed.
+  if (resp.server_will_restart) {
+    btn.textContent = "Restarting server…";
+    setStatus("backend updated — restarting server (5-15s)…");
+    // Wait for the server to die then come back
+    let backUp = false;
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const h = await fetch("/api/health", { signal: AbortSignal.timeout(800) });
+        if (h.ok) { backUp = true; break; }
+      } catch { /* still down */ }
+    }
+    if (!backUp) {
+      setStatus("server didn't come back after 30s — refresh the page manually");
+      btn.disabled = false;
+      btn.textContent = originalText;
+      return;
+    }
+  }
+  // Hard reload to pick up new dashboard.js / index.html / dashboard.css
+  setStatus("reloading dashboard…");
+  // Cache-bust query string to force a fresh fetch even if the browser
+  // has cached the old bundle
+  window.location.href = window.location.pathname + "?_t=" + Date.now();
 }
 
 // ----- events -----
@@ -3905,7 +3937,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (entry) loadExperiment(entry);
   });
   document.getElementById("reset-zoom-btn").addEventListener("click", resetZoom);
-  document.getElementById("pull-shared-btn")?.addEventListener("click", onPullSharedClick);
+  document.getElementById("update-dashboard-btn")?.addEventListener("click", onUpdateDashboardClick);
   document.getElementById("close-detail-btn").addEventListener("click", closeDetail);
   // Compare mode
   document.getElementById("compare-mode").addEventListener("change", (e) => {
