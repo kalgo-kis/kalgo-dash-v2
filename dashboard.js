@@ -133,11 +133,14 @@ function getFilteredSorted() {
   else if (source === "user" && userPrefix) {
     list = list.filter(e => (e.filename || "").toLowerCase().startsWith(userPrefix + "_"));
   }
+  // Sort by Investor Return (canonical metric), with fallback to legacy
+  // total_return when the bundle doesn't carry IR.
+  const irOf = (e) => e.investor_return ?? e.total_return ?? 0;
   switch (sort) {
-    case "tr_desc": list.sort((a,b) => (b.total_return||0) - (a.total_return||0)); break;
-    case "tr_asc":  list.sort((a,b) => (a.total_return||0) - (b.total_return||0)); break;
+    case "tr_desc": list.sort((a,b) => irOf(b) - irOf(a)); break;
+    case "tr_asc":  list.sort((a,b) => irOf(a) - irOf(b)); break;
     case "recent":  list.sort((a,b) => (b.timestamp||"").localeCompare(a.timestamp||"")); break;
-    default:        list.sort((a,b) => (b.bundled - a.bundled) || ((b.total_return||0) - (a.total_return||0)));
+    default:        list.sort((a,b) => (b.bundled - a.bundled) || (irOf(b) - irOf(a)));
   }
   return list;
 }
@@ -148,15 +151,16 @@ function refreshSelector() {
   sel.innerHTML = "";
   for (const e of list) {
     const opt = document.createElement("option");
-    const tr = e.total_return != null ? e.total_return.toFixed(3) + "x" : "n/a";
+    // Investor Return = total_distributed / total_called (canonical metric).
+    // Falls back to legacy total_return for old bundles where the server
+    // couldn't compute IR (missing accounts list etc.).
+    const ir = e.investor_return ?? e.total_return;
+    const irStr = ir != null ? ir.toFixed(3) + "x" : "n/a";
     const tag = e.source === "scratch" ? "[scratch] " : (e.bundled ? "● " : "  ");
-    // Display the user-supplied name (experiment_label) when available;
-    // fall back to experiment_id for legacy bundles that don't carry one
-    // distinct from their id (e.g. v3_flexgrid_baseline_fold4).
     const displayName = (e.experiment_label && e.experiment_label !== e.experiment_id)
       ? e.experiment_label
       : e.experiment_id;
-    opt.textContent = `${tag}[${e.fold}] ${displayName}  —  TR ${tr}  (${e.total_accounts || "?"} accts)`;
+    opt.textContent = `${tag}[${e.fold}] ${displayName}  —  IR ${irStr}  (${e.total_accounts || "?"} accts)`;
     opt.value = e.experiment_id + "||" + e.fold;
     sel.appendChild(opt);
   }
