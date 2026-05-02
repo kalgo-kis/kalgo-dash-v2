@@ -492,19 +492,36 @@ function buildComplianceRows(bundle) {
         if (sideKey !== "buy" && sideKey !== "sell") continue;
         const s = state[sideKey];
         const depth = s.depth;          // depth BEFORE this entry (0-indexed)
+        const isAdaptive = (e.tag || "").toLowerCase() === "adaptive";
         const tier = activeTierForDepth(tiers, depth);
 
-        // Lot expectation
+        // Lot + spacing expectations — N/A for adaptive entries (they're
+        // market orders sized dynamically by the policy, not constrained
+        // by a grid tier). Adaptive rows render with tier='ADAPTIVE' and
+        // skip the lot/spacing compliance checks.
         const actualLot = e.lots;
-        const expectedLot = tier.expected_lot;
-        const lotOk = Math.abs(actualLot - expectedLot) < 0.005;
-
-        // Spacing expectation (only meaningful for non-first entries)
-        const expectedSpacing = tier.spacing_pips;
-        let actualSpacing = null, spacingOk = null;
-        if (s.lastPrice !== null) {
-          actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
-          spacingOk = Math.abs(actualSpacing - expectedSpacing) <= COMPLIANCE_SPACING_TOL_PIPS;
+        let expectedLot, lotOk, expectedSpacing, actualSpacing, spacingOk, tierLabel, tierName;
+        if (isAdaptive) {
+          expectedLot = null;
+          lotOk = null;
+          expectedSpacing = null;
+          actualSpacing = null;
+          spacingOk = null;
+          tierLabel = "ADAPTIVE";
+          tierName = "adaptive";
+        } else {
+          expectedLot = tier.expected_lot;
+          lotOk = Math.abs(actualLot - expectedLot) < 0.005;
+          expectedSpacing = tier.spacing_pips;
+          if (s.lastPrice !== null) {
+            actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
+            spacingOk = Math.abs(actualSpacing - expectedSpacing) <= COMPLIANCE_SPACING_TOL_PIPS;
+          } else {
+            actualSpacing = null;
+            spacingOk = null;
+          }
+          tierLabel = tier.label;
+          tierName = tier.name;
         }
 
         const row = {
@@ -513,9 +530,10 @@ function buildComplianceRows(bundle) {
           time: ev.time,
           side: sideKey.toUpperCase(),
           depth: depth,             // depth-before-entry; matches engine's _active_tier(depth)
-          tier: tier.label,
-          tier_name: tier.name,
+          tier: tierLabel,
+          tier_name: tierName,
           price: e.price,
+          tag: e.tag || "",
           // Exact close info from the bundle (joined by entry_id from the
           // broker's per_position close events). Null only if the trade
           // never closed (shouldn't happen — every position closes via
@@ -530,7 +548,8 @@ function buildComplianceRows(bundle) {
           actual_spacing: actualSpacing,    // null for first entry of basket
           expected_spacing: expectedSpacing,
           spacing_ok: spacingOk,            // null for first entry of basket
-          ok: lotOk && (spacingOk === null || spacingOk),
+          // Adaptive rows pass compliance (no lot/spacing rule applies).
+          ok: isAdaptive ? true : (lotOk && (spacingOk === null || spacingOk)),
         };
         rows.push(row);
 
@@ -767,13 +786,23 @@ function redrawComplianceBody() {
     if (r.exit_price == null) {
       exitCell = `<span class="muted">—</span>`;
     } else {
-      const tag = r.exit_reason === "stopout"
-        ? ` <span class="exit-tag stopout" title="Margin stop-out — broker closed this position to satisfy margin">S/O</span>`
-        : "";
+      let tag = "";
+      if (r.exit_reason === "stopout") {
+        tag = ` <span class="exit-tag stopout" title="Margin stop-out — broker closed this position to satisfy margin">S/O</span>`;
+      } else if (r.exit_reason === "adaptive_cut") {
+        tag = ` <span class="exit-tag adaptive-cut" title="Adaptive cut — closed by the policy to fund a cut-bottom decision">CUT</span>`;
+      }
       exitCell = `${fmtPrice(r.exit_price)}${tag}`;
     }
-    const rowCls = [r.ok ? '' : 'bad', r.exit_reason === 'stopout' ? 'stopout' : '']
-      .filter(Boolean).join(' ');
+    // Row-level CSS classes: 'bad' for compliance failures, 'stopout' for
+    // amber-tinted exit, 'adaptive' for cyan-tinted entry on adaptive
+    // market trades, 'adaptive-cut' for orange-tinted close on cut events.
+    const rowCls = [
+      r.ok ? '' : 'bad',
+      r.exit_reason === 'stopout' ? 'stopout' : '',
+      r.tier_name === 'adaptive' ? 'adaptive' : '',
+      r.exit_reason === 'adaptive_cut' ? 'adaptive-cut' : '',
+    ].filter(Boolean).join(' ');
     return `<tr class="${rowCls}">
       <td class="trade-id">${r.id || '—'}</td>
       <td>${fmtTime(r.time)}</td>
@@ -1916,6 +1945,31 @@ function formatTradeTooltip(tick) {
         `<span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span></div>`
     );
   }
+  if (m.kind === "adaptive_entry") {
+    const sideColor = (m.side === "BUY") ? COLORS.cyan : COLORS.gold;
+    const idLine = m.id
+      ? `<div style="color:${COLORS.cyan};font-family:var(--font-mono),monospace;font-size:10px;margin-bottom:2px">${m.id}</div>`
+      : "";
+    return (
+      idLine +
+      `<div style="color:${sideColor};font-weight:600">` +
+        `${m.side} ADAPTIVE entry · ${fmtLots(m.lots)} lots</div>` +
+      `<div style="color:${COLORS.textMuted};margin-top:2px">` +
+        `price ${fmtPrice(m.price)} · sticky TP active</div>`
+    );
+  }
+  if (m.kind === "adaptive_cut") {
+    const pnlColor = (m.pnl >= 0) ? COLORS.green : COLORS.red;
+    const pnlSign  = (m.pnl >= 0) ? "+" : "";
+    return (
+      `<div style="color:${COLORS.orange};font-weight:600">` +
+        `${m.side} ADAPTIVE cut</div>` +
+      `<div style="color:${COLORS.textMuted};margin-top:2px">` +
+        `closed @ ${fmtPrice(m.price)} · ` +
+        `<span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span> ` +
+        `· entry_id ${m.entry_id ?? "—"}</div>`
+    );
+  }
   return `<div style="color:${COLORS.textMuted}">${JSON.stringify(m)}</div>`;
 }
 
@@ -2021,23 +2075,31 @@ function showTraceOverlay(a) {
     if (ev.type === "entry") {
       const e = ev.data;
       const isBuy = (e.dir || "").toLowerCase() === "buy";
-      // Tier-shaded entry: lighter for base tier, darker for deeper flex
-      // tiers. Falls back to base shade when depth_at_entry is missing
-      // (legacy bundles) or thresholds are unset.
-      const color = tierColorFor(isBuy ? "buy" : "sell", e.depth_at_entry, tierThresholds);
-      const tier = tierIndexForDepth(e.depth_at_entry, tierThresholds);
+      // Adaptive entries (tag='adaptive') render in cyan/teal so they
+      // visually pop out from the FlexGrid tier-shaded grid entries.
+      // depth_at_entry on adaptive entries is -1 (set by bundle.py because
+      // the order tag isn't 'grid_N'). Pinned 2026-05-02.
+      const isAdaptive = (e.tag || "").toLowerCase() === "adaptive";
+      let color;
+      if (isAdaptive) {
+        color = isBuy ? COLORS.cyan : COLORS.gold;  // distinct from grid shades
+      } else {
+        color = tierColorFor(isBuy ? "buy" : "sell", e.depth_at_entry, tierThresholds);
+      }
+      const tier = isAdaptive ? -1 : tierIndexForDepth(e.depth_at_entry, tierThresholds);
       const tick = {
         t: nearestCandleTime(e.time_unix),
         v: e.price,
         color,
         meta: {
-          kind: "entry",
+          kind: isAdaptive ? "adaptive_entry" : "entry",
           id: e.id || "",
           side: isBuy ? "BUY" : "SELL",
           lots: e.lots,
           price: e.price,
           depth: e.depth_at_entry,
           tier,
+          tag: e.tag || "",
           time_unix: e.time_unix,
         },
       };
@@ -2098,6 +2160,32 @@ function showTraceOverlay(a) {
     for (const entry of pendingSell) {
       basketLines.push({ fromT: entry.t, fromV: entry.v, toT: blowupCandleT, toV: entry.v, color: "rgba(219,109,40,0.5)" });
     }
+  }
+
+  // Adaptive cut events (Tier 1 spec 2026-05-02). Each cut is the broker
+  // closing one specific position with reason='adaptive_cut'. Render at the
+  // close_price as a small dark-orange circle so cuts visually separate from
+  // grid entries (light shades) and adaptive entries (cyan/gold).
+  for (const ce of (a.adaptive_cut_events || [])) {
+    const t = ce.time_unix;
+    if (!t) continue;
+    const cp = ce.close_price;
+    if (!cp) continue;
+    const isBuy = (ce.side || "").toUpperCase() === "BUY";
+    allTicks.push({
+      t: nearestCandleTime(t),
+      v: cp,
+      color: COLORS.orange,  // distinct from blue/purple basket-close ticks
+      meta: {
+        kind: "adaptive_cut",
+        side: isBuy ? "BUY" : "SELL",
+        price: cp,
+        pnl: ce.pnl,
+        commission: ce.commission,
+        time_unix: t,
+        entry_id: ce.entry_id,
+      },
+    });
   }
 
   allTicks.sort((a, b) => a.t - b.t);
@@ -2189,14 +2277,42 @@ function showTraceOverlay(a) {
     }
     ctx.setLineDash([]);
 
-    // Draw entry and close ticks
+    // Draw entry and close ticks. Adaptive entries render as larger filled
+    // diamonds so they pop visually from the regular 8×2 entry rectangles.
+    // Adaptive cuts render as small filled circles (5px radius) at the cut's
+    // close price.
     for (const tk of allTicks) {
       const x = ts.timeToCoordinate(tk.t);
       if (x === null) continue;
       const y = state.candleSeries.priceToCoordinate(tk.v);
       if (y === null) continue;
       ctx.fillStyle = tk.color;
-      ctx.fillRect(x + offsetX - 4, y + offsetY - 1, 8, 2);
+      const kind = tk.meta && tk.meta.kind;
+      if (kind === "adaptive_entry") {
+        // Diamond at (x, y), radius 5
+        const r = 5;
+        ctx.beginPath();
+        ctx.moveTo(x + offsetX,     y + offsetY - r);
+        ctx.lineTo(x + offsetX + r, y + offsetY);
+        ctx.lineTo(x + offsetX,     y + offsetY + r);
+        ctx.lineTo(x + offsetX - r, y + offsetY);
+        ctx.closePath();
+        ctx.fill();
+        // Outline so it's visible on busy charts
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else if (kind === "adaptive_cut") {
+        // Filled circle, radius 4
+        ctx.beginPath();
+        ctx.arc(x + offsetX, y + offsetY, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else {
+        ctx.fillRect(x + offsetX - 4, y + offsetY - 1, 8, 2);
+      }
     }
 
     ctx.restore();
@@ -2665,6 +2781,14 @@ function basketMetrics(basket) {
   const maxDepth = Math.max(...basket.entries.map(e => e.depth_at_entry || 0)) + 1;
   const totalLots = basket.entries.reduce((s, e) => s + (e.lots || 0), 0);
   const avgLot = basket.entries.length ? totalLots / basket.entries.length : 0;
+  // Adaptive activity within this basket cycle (Tier 1 mechanic, 2026-05-02).
+  // hadAdaptive = at least one entry tagged 'adaptive' (engine flips
+  // adaptive_active sticky on first such entry; flag persists until basket
+  // close per spec).
+  const hadAdaptive = basket.entries.some(e => (e.tag || "").toLowerCase() === "adaptive");
+  const adaptiveEntryCount = basket.entries.filter(
+    e => (e.tag || "").toLowerCase() === "adaptive"
+  ).length;
   // Sum of broker-exact pnl_net per entry (Σ for closed entries, null for
   // still-open). For a closed basket, Σ pnl_net should equal the basket's
   // close pnl minus its commission.
@@ -2686,6 +2810,8 @@ function basketMetrics(basket) {
     lifetime_sec: lifetimeSec,
     start_unix: start,
     end_unix: end,
+    had_adaptive: hadAdaptive,
+    adaptive_entry_count: adaptiveEntryCount,
   };
 }
 
@@ -2741,9 +2867,13 @@ function renderBasketPanel(acct) {
     const pnlStr = m.net_pnl == null
       ? "—"
       : (m.net_pnl >= 0 ? "+" : "") + fmtMoney(m.net_pnl);
+    // Adaptive badge — visible on baskets where adaptive fired.
+    const adaptiveBadge = m.had_adaptive
+      ? `<span class="adaptive-badge" title="Adaptive entry fired in this basket cycle (sticky TP active)">ADAPT×${m.adaptive_entry_count}</span>`
+      : "";
     return `<tr data-basket-key="${b.key}">
       <td class="num">${b.basket_num}</td>
-      <td class="side-${b.side}">${b.side}</td>
+      <td class="side-${b.side}">${b.side}${adaptiveBadge}</td>
       <td>${_fmtBasketTime(m.start_unix)}</td>
       <td>${_fmtBasketTime(m.end_unix)}</td>
       <td class="${reasonClass}">${reason}</td>
@@ -2785,6 +2915,12 @@ function selectBasket(basket) {
   const card = document.getElementById("basket-metrics-card");
   if (card && m) {
     card.style.display = "";
+    const adaptiveStat = m.had_adaptive
+      ? `<div class="stat"><span class="label">Adaptive</span>
+           <span class="value" style="color:var(--cyan, #39c5cf);">
+             ACTIVE · ${m.adaptive_entry_count} entry${m.adaptive_entry_count === 1 ? '' : 's'} · sticky TP
+           </span></div>`
+      : "";
     card.innerHTML = `
       <div class="stat"><span class="label">Basket</span><span class="value">#${basket.basket_num} <span style="color:var(--text-muted);font-weight:400;">(${basket.side})</span></span></div>
       <div class="stat"><span class="label">Entries</span><span class="value">${m.n_entries}</span></div>
@@ -2796,6 +2932,7 @@ function selectBasket(basket) {
         <span class="value" style="color: var(--${m.net_pnl == null ? "text-muted" : (m.net_pnl >= 0 ? "green" : "red")})">
           ${m.net_pnl == null ? "—" : (m.net_pnl >= 0 ? "+" : "") + fmtMoney(m.net_pnl)}
         </span></div>
+      ${adaptiveStat}
     `;
   }
   // Zoom chart to the basket's window with 30-min padding
@@ -3006,6 +3143,41 @@ function showAccountDetail(a) {
       </div>`;
   }
 
+  // Section C: Adaptive mechanic stats (Tier 1 spec, pinned 2026-05-02).
+  // Renders only if the account had any adaptive activity. lifetime_realized_profit
+  // is the cut budget — total positive realized PnL on this account, ever.
+  // lifetime_cut_loss is what's been spent. Remaining = budget − spent.
+  let adaptiveHTML = "";
+  const adaptiveDecisions = a.adaptive_decision_events || [];
+  const adaptiveCuts = a.adaptive_cut_events || [];
+  const lifetimeProfit = a.lifetime_realized_profit || 0;
+  const lifetimeCutLoss = a.lifetime_cut_loss || 0;
+  const remainingBudget = Math.max(0, lifetimeProfit - lifetimeCutLoss);
+  const decisionsByAction = adaptiveDecisions.reduce((acc, e) => {
+    const k = e.action || "unknown";
+    acc[k] = (acc[k] || 0) + 1;
+    return acc;
+  }, {});
+  if (adaptiveDecisions.length > 0 || adaptiveCuts.length > 0 || lifetimeProfit > 0 || lifetimeCutLoss > 0) {
+    const actionLabel = (k) => decisionsByAction[k] || 0;
+    adaptiveHTML = `
+      <div class="basket-metrics">
+        <div class="basket-metrics-title">Adaptive Mechanic</div>
+        <div class="basket-metrics-grid">
+          <div class="k">Lifetime realized profit (cut budget)</div>
+          <div class="v">${fmtMoney(lifetimeProfit)}</div>
+          <div class="k">Lifetime cut loss (consumed)</div>
+          <div class="v" style="color:var(--orange)">${fmtMoney(lifetimeCutLoss)}</div>
+          <div class="k">Remaining budget</div>
+          <div class="v" style="color:${remainingBudget > 0 ? 'var(--green)' : 'var(--text-muted)'}">${fmtMoney(remainingBudget)}</div>
+          <div class="k">Adaptive triggers</div><div class="v">${adaptiveDecisions.length}</div>
+          <div class="k">Action breakdown</div>
+          <div class="v">adaptive ${actionLabel('adaptive')} · cut_only ${actionLabel('cut_only')} · surrender ${actionLabel('surrender')} · skip ${actionLabel('skip')}</div>
+          <div class="k">Cut events</div><div class="v">${adaptiveCuts.length}</div>
+        </div>
+      </div>`;
+  }
+
   document.getElementById("close-detail-btn").style.display = "";
   document.getElementById("detail-body").innerHTML = `
     <div class="detail-header">
@@ -3021,6 +3193,7 @@ function showAccountDetail(a) {
       <div class="k">Net $/Day</div><div class="v" style="color:var(--${netperday >= 0 ? "green" : "red"})">${fmtMoney(netperday)}</div>
     </div>
     ${basketHTML}
+    ${adaptiveHTML}
     <div class="detail-actions">
       <button id="zoom-to-acct-btn">Zoom to account lifetime</button>
       ${a.trace ? '<button id="hide-trades-btn">Hide trades</button>' : '<span class="muted" style="font-size:11px;">No trace data (run with --trace)</span>'}
@@ -3632,10 +3805,21 @@ const BUNDLE_TO_FORM_MAP = {
   recovery_tp_pips:          b => b.policy_config?.recovery?.recovery_tp_pips,
   recovery_risk_pct:         b => b.policy_config?.recovery?.recovery_risk_pct,
   recovery_max_adverse_pips: b => b.policy_config?.recovery?.recovery_max_adverse_pips,
-  // adaptive
+  // adaptive_tools (deprecated names, kept for backward compat with the
+  // existing adaptive_tools section)
   phase1_model:       b => b.policy_config?.adaptive_tools?.phase1_model || "",
   prob_table_active:  b => !!b.policy_config?.adaptive_tools?.prob_table_active,
   regime_classifier:  b => b.policy_config?.adaptive_tools?.regime_classifier || "",
+  // Cooldown gate (Tier 1 spec, 2026-05-02)
+  entry_cooldown_minutes: b => b.policy_config?.cooldown?.entry_cooldown_minutes ?? 0,
+  // Adaptive sizing + cut-bottom (Tier 1 spec, 2026-05-02)
+  adaptive_enabled:                     b => !!b.policy_config?.adaptive?.enabled,
+  adaptive_sizing_mode:                 b => b.policy_config?.adaptive?.sizing_mode || "TARGET_DISTANCE",
+  adaptive_target_distance_pips:        b => b.policy_config?.adaptive?.target_distance_pips ?? 10,
+  adaptive_percent_reduction:           b => b.policy_config?.adaptive?.percent_reduction ?? 0.5,
+  adaptive_displacement_threshold_pips: b => b.policy_config?.adaptive?.displacement_threshold_pips ?? 100,
+  adaptive_tp_pips:                     b => b.policy_config?.adaptive?.tp_pips_when_active ?? 10,
+  adaptive_min_wapp_improvement_pips:   b => b.policy_config?.adaptive?.min_wapp_improvement_pips ?? 5,
   // realism (display-only — no user-editable fields, but populated for visibility)
   leverage:                       b => b.policy_config?.risk?.leverage_implied,
   commission_per_lot_per_side_usd: b => b.policy_config?.realism?.commission_per_lot_per_side_usd,

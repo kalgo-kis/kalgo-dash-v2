@@ -1256,6 +1256,21 @@ header .subtitle {
 .basket-table .pnl-neg { color: #f85149; }
 .basket-table .reason-tp        { color: #56d364; }
 .basket-table .reason-stopout   { color: #f85149; }
+/* Adaptive badge in basket table — small cyan pill so the user can spot
+   which baskets had the adaptive mechanic fire. Pinned 2026-05-02. */
+.adaptive-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: rgba(57,197,207,0.18);
+  color: #39c5cf;
+  border: 1px solid #1f6f74;
+  border-radius: 3px;
+  vertical-align: middle;
+}
 .basket-table .reason-surrender { color: #d29922; }
 .basket-table .reason-open      { color: var(--text-muted); }
 
@@ -1506,6 +1521,34 @@ header .subtitle {
   background: rgba(210,153,34,0.18);
   color: #d29922;
   border: 1px solid #6b4f10;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+/* Adaptive entry rows: cyan tint to mark them apart from grid entries
+   (which carry tier shading). Pinned 2026-05-02 — adaptive market trades
+   are sized dynamically by the policy, so they pass compliance N/A. */
+.tc-table tbody tr.adaptive {
+  background: rgba(57,197,207,0.08);
+  border-left: 2px solid #39c5cf;
+}
+.tc-table tbody tr.adaptive:hover { background: rgba(57,197,207,0.18); }
+/* Adaptive cut rows: an existing grid entry that closed via reason=adaptive_cut.
+   Orange tint distinguishes from regular stop-outs. */
+.tc-table tbody tr.adaptive-cut {
+  background: rgba(219,109,40,0.08);
+  border-left: 2px solid #db6d28;
+}
+.tc-table tbody tr.adaptive-cut:hover { background: rgba(219,109,40,0.18); }
+.tc-table .exit-tag.adaptive-cut {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: rgba(219,109,40,0.18);
+  color: #db6d28;
+  border: 1px solid #6b3a14;
   border-radius: 3px;
   vertical-align: middle;
 }
