@@ -1902,7 +1902,11 @@ function formatTradeTooltip(tick) {
   if (m.kind === "close") {
     const pnlColor = (m.pnl >= 0) ? COLORS.green : COLORS.red;
     const pnlSign  = (m.pnl >= 0) ? "+" : "";
+    const idLine = m.basketId
+      ? `<div style="color:${COLORS.cyan};font-family:var(--font-mono),monospace;font-size:10px;margin-bottom:2px">${m.basketId}</div>`
+      : "";
     return (
+      idLine +
       `<div style="color:${COLORS.text};font-weight:600">` +
         `${m.side} basket close · ${m.reason || "—"}</div>` +
       `<div style="color:${COLORS.textMuted};margin-top:2px">` +
@@ -2043,6 +2047,16 @@ function showTraceOverlay(a) {
       const side = (c.closed_basket || "").toLowerCase();
       const closeT = nearestCandleTime(ev.time);
       if (cp > 0) {
+        // Pull the basket ID from the pending entries on this side. They
+        // were assigned A{acct}.B{N}.T{N} ids by renumberTradeIDs at load
+        // time; every entry in the same basket cycle shares the same B{N}.
+        const pending = side === "buy" ? pendingBuy : pendingSell;
+        let basketId = null;
+        if (pending.length) {
+          const firstId = pending[0].meta?.id || "";
+          const m = /^(A\d+\.B\d+)\.T\d+$/.exec(firstId);
+          if (m) basketId = m[1];
+        }
         const closeColor = side === "buy" ? COLORS.blue : COLORS.purple;
         allTicks.push({
           t: closeT,
@@ -2050,6 +2064,7 @@ function showTraceOverlay(a) {
           color: closeColor,
           meta: {
             kind: "close",
+            basketId,
             side: side.toUpperCase(),
             price: cp,
             pnl: c.pnl,
