@@ -751,11 +751,20 @@ function redrawComplianceBody() {
     const pnlCell = (r.pnl == null)
       ? `<span class="muted">—</span>`
       : `<span class="${r.pnl >= 0 ? 'ok' : 'bad'}">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)}</span>`;
-    const exitCell = (r.exit_price == null)
-      ? `<span class="muted">—</span>`
-      : fmtPrice(r.exit_price);
-
-    return `<tr class="${r.ok ? '' : 'bad'}">
+    // Show the close reason next to the exit price so stopouts read as
+    // "0.91802 (S/O)" rather than just a price. Color-code stopouts.
+    let exitCell;
+    if (r.exit_price == null) {
+      exitCell = `<span class="muted">—</span>`;
+    } else {
+      const tag = r.exit_reason === "stopout"
+        ? ` <span class="exit-tag stopout" title="Margin stop-out — broker closed this position to satisfy margin">S/O</span>`
+        : "";
+      exitCell = `${fmtPrice(r.exit_price)}${tag}`;
+    }
+    const rowCls = [r.ok ? '' : 'bad', r.exit_reason === 'stopout' ? 'stopout' : '']
+      .filter(Boolean).join(' ');
+    return `<tr class="${rowCls}">
       <td class="trade-id">${r.id || '—'}</td>
       <td>${fmtTime(r.time)}</td>
       <td class="${sideCls}">${r.side}</td>
@@ -2152,6 +2161,33 @@ function showTraceOverlay(a) {
       markers.push({ time: t15, position: "aboveBar", color: COLORS.red,
         shape: "square", text: "BLOWUP", size: 1 });
     }
+    // Incremental stop-out markers: each `position_close` event with
+    // reason='stopout' is the broker closing the worst position to satisfy
+    // margin (Vantage incremental stop-out, MASTER_PLAN.md pinned). One
+    // marker per stopout time bucket — coalesced to the same M15 candle so
+    // a tight burst of stopouts shows as a single tick.
+    const entries = (a.trace?.grid_entry_events) || [];
+    const stopBuckets = new Set();
+    for (const e of entries) {
+      if (e.exit_reason !== "stopout") continue;
+      const t = e.exit_time_unix;
+      if (!t) continue;
+      const bucket = Math.floor(t / 900) * 900;
+      stopBuckets.add(bucket);
+    }
+    for (const t of stopBuckets) {
+      // Only show standalone stopouts — skip the bucket that's adjacent
+      // to the BLOWUP marker (within one M15 candle), since BLOWUP is
+      // already there and they'd visually collide.
+      if (a.blowup && blowupT) {
+        const blowupBucket = Math.floor(blowupT / 900) * 900;
+        if (Math.abs(t - blowupBucket) <= 900) continue;
+      }
+      markers.push({
+        time: t, position: "aboveBar", color: "#d29922",
+        shape: "square", text: "S/O", size: 0,
+      });
+    }
     markers.sort((a, b) => a.time - b.time);
     return markers;
   }
@@ -2206,7 +2242,30 @@ function showTraceOverlay(a) {
       }
       return out;
     };
-    state.traceEquitySeries.setData(dedup(eqSnaps, "eq"));
+    // For stopout accounts, the engine's last equity_snapshot is taken on
+    // the periodic heartbeat — often 30+ minutes BEFORE the blowup itself.
+    // The displayed curve flatlined on this stale value, making it look
+    // like the account ended with hundreds of $ left over even though the
+    // residual returned to pool was ~$0. Synthesize a post-blowup point
+    // that shows the actual residual (computable from the account record:
+    //   residual = stake + net - withdrawn  (only valid for blowup_loss /
+    //   blowup_profit; survived/eot accounts are handled by their last
+    //   snapshot which IS at eval-end).
+    const eqPoints = dedup(eqSnaps, "eq");
+    if (a.outcome === "blowup_loss" || a.outcome === "blowup_profit") {
+      const blowupT = toUnix(a.blowup_time);
+      if (blowupT != null) {
+        const residual = (a.stake || 0) + (a.net || 0) - (a.withdrawn || 0);
+        const synthT = snapToCandle(blowupT);
+        // Only append if it's after the last existing point and the residual
+        // differs meaningfully from the last shown equity (else it's a no-op).
+        const last = eqPoints[eqPoints.length - 1];
+        if (!last || synthT > last.time) {
+          eqPoints.push({ time: synthT, value: Math.max(0, residual) });
+        }
+      }
+    }
+    state.traceEquitySeries.setData(eqPoints);
 
     // Cumulative withdrawn line (light blue) — off by default, toggled
     // via the "Show cumulative withdrawn" button in the detail panel.

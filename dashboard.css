@@ -1487,6 +1487,28 @@ header .subtitle {
 .tc-table tbody tr:hover           { background: rgba(88,166,255,0.06); }
 .tc-table tbody tr.bad             { background: rgba(248,81,73,0.10); }
 .tc-table tbody tr.bad:hover       { background: rgba(248,81,73,0.18); }
+/* Margin stop-out rows: amber tint so they read at a glance.
+   When also a config-issue (.bad), the red of .bad stacks under the amber
+   border-left so both signals are visible. */
+.tc-table tbody tr.stopout {
+  background: rgba(210,153,34,0.08);
+  border-left: 2px solid #d29922;
+}
+.tc-table tbody tr.stopout:hover { background: rgba(210,153,34,0.18); }
+.tc-table tbody tr.stopout.bad   { background: rgba(248,81,73,0.10); border-left-color: #d29922; }
+.tc-table .exit-tag.stopout {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: rgba(210,153,34,0.18);
+  color: #d29922;
+  border: 1px solid #6b4f10;
+  border-radius: 3px;
+  vertical-align: middle;
+}
 .tc-table .num                     { text-align: right; font-variant-numeric: tabular-nums; }
 .tc-table .side-buy                { color: #56d364; font-weight: 600; }
 .tc-table .side-sell               { color: #f85149; font-weight: 600; }
