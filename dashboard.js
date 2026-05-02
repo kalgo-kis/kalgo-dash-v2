@@ -150,7 +150,13 @@ function refreshSelector() {
     const opt = document.createElement("option");
     const tr = e.total_return != null ? e.total_return.toFixed(3) + "x" : "n/a";
     const tag = e.source === "scratch" ? "[scratch] " : (e.bundled ? "● " : "  ");
-    opt.textContent = `${tag}[${e.fold}] ${e.experiment_id}  —  TR ${tr}  (${e.total_accounts || "?"} accts)`;
+    // Display the user-supplied name (experiment_label) when available;
+    // fall back to experiment_id for legacy bundles that don't carry one
+    // distinct from their id (e.g. v3_flexgrid_baseline_fold4).
+    const displayName = (e.experiment_label && e.experiment_label !== e.experiment_id)
+      ? e.experiment_label
+      : e.experiment_id;
+    opt.textContent = `${tag}[${e.fold}] ${displayName}  —  TR ${tr}  (${e.total_accounts || "?"} accts)`;
     opt.value = e.experiment_id + "||" + e.fold;
     sel.appendChild(opt);
   }
