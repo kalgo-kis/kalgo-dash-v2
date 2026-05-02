@@ -496,13 +496,18 @@ function buildComplianceRows(bundle) {
         // Don't match on equality with "adaptive" — the engine emits an
         // index suffix per the OrderRequest construction in
         // engine/grid.py:check_entries.
-        const isAdaptive = (e.tag || "").toLowerCase().startsWith("adaptive");
+        const tagLower = (e.tag || "").toLowerCase();
+        const isAdaptive = tagLower.startsWith("adaptive");
+        // Re-anchor entries: tag is `grid_<N>_reanchor`. After a cooldown
+        // gap the basket re-anchors to the next nearby global grid line,
+        // so spacing from the previous fill is a MULTIPLE of tier.spacing
+        // (the gap can span several levels). Lot is still tier-correct;
+        // skip only the spacing check for these.
+        const isReAnchor = tagLower.endsWith("_reanchor");
         const tier = activeTierForDepth(tiers, depth);
 
-        // Lot + spacing expectations — N/A for adaptive entries (they're
-        // market orders sized dynamically by the policy, not constrained
-        // by a grid tier). Adaptive rows render with tier='ADAPTIVE' and
-        // skip the lot/spacing compliance checks.
+        // Lot + spacing expectations — adaptive rows skip both (their
+        // sizing is policy-overridden); re-anchor rows skip spacing only.
         const actualLot = e.lots;
         let expectedLot, lotOk, expectedSpacing, actualSpacing, spacingOk, tierLabel, tierName;
         if (isAdaptive) {
@@ -516,16 +521,36 @@ function buildComplianceRows(bundle) {
         } else {
           expectedLot = tier.expected_lot;
           lotOk = Math.abs(actualLot - expectedLot) < 0.005;
-          expectedSpacing = tier.spacing_pips;
-          if (s.lastPrice !== null) {
-            actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
-            spacingOk = Math.abs(actualSpacing - expectedSpacing) <= COMPLIANCE_SPACING_TOL_PIPS;
+          if (isReAnchor) {
+            // Spacing is intentionally a multiple of tier.spacing_pips.
+            expectedSpacing = tier.spacing_pips;
+            if (s.lastPrice !== null) {
+              actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
+              // Accept any positive multiple of tier.spacing_pips (within
+              // float tolerance). E.g. 10 / 20 / 30 / 40 pip spacings are
+              // all valid for a base tier with spacing=10.
+              const ratio = actualSpacing / expectedSpacing;
+              const nearestInt = Math.round(ratio);
+              spacingOk = nearestInt >= 1
+                && Math.abs(ratio - nearestInt) * expectedSpacing <= COMPLIANCE_SPACING_TOL_PIPS;
+            } else {
+              actualSpacing = null;
+              spacingOk = null;
+            }
+            tierLabel = tier.label + " (re-anchor)";
+            tierName = tier.name;
           } else {
-            actualSpacing = null;
-            spacingOk = null;
+            expectedSpacing = tier.spacing_pips;
+            if (s.lastPrice !== null) {
+              actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
+              spacingOk = Math.abs(actualSpacing - expectedSpacing) <= COMPLIANCE_SPACING_TOL_PIPS;
+            } else {
+              actualSpacing = null;
+              spacingOk = null;
+            }
+            tierLabel = tier.label;
+            tierName = tier.name;
           }
-          tierLabel = tier.label;
-          tierName = tier.name;
         }
 
         const row = {
