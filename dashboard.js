@@ -492,7 +492,11 @@ function buildComplianceRows(bundle) {
         if (sideKey !== "buy" && sideKey !== "sell") continue;
         const s = state[sideKey];
         const depth = s.depth;          // depth BEFORE this entry (0-indexed)
-        const isAdaptive = (e.tag || "").toLowerCase() === "adaptive";
+        // Adaptive entries: tag is `adaptive_<level>` (e.g. `adaptive_12`).
+        // Don't match on equality with "adaptive" — the engine emits an
+        // index suffix per the OrderRequest construction in
+        // engine/grid.py:check_entries.
+        const isAdaptive = (e.tag || "").toLowerCase().startsWith("adaptive");
         const tier = activeTierForDepth(tiers, depth);
 
         // Lot + spacing expectations — N/A for adaptive entries (they're
@@ -2075,11 +2079,12 @@ function showTraceOverlay(a) {
     if (ev.type === "entry") {
       const e = ev.data;
       const isBuy = (e.dir || "").toLowerCase() === "buy";
-      // Adaptive entries (tag='adaptive') render in cyan/teal so they
-      // visually pop out from the FlexGrid tier-shaded grid entries.
-      // depth_at_entry on adaptive entries is -1 (set by bundle.py because
-      // the order tag isn't 'grid_N'). Pinned 2026-05-02.
-      const isAdaptive = (e.tag || "").toLowerCase() === "adaptive";
+      // Adaptive entries (tag='adaptive_<level>', e.g. 'adaptive_12') render
+      // in cyan/teal so they visually pop out from the FlexGrid tier-shaded
+      // grid entries. depth_at_entry on adaptive entries comes from the
+      // numeric suffix; bundle.py:_depth_from_tag handles both grid_N and
+      // adaptive_N forms. Pinned 2026-05-02.
+      const isAdaptive = (e.tag || "").toLowerCase().startsWith("adaptive");
       let color;
       if (isAdaptive) {
         color = isBuy ? COLORS.cyan : COLORS.gold;  // distinct from grid shades
@@ -2782,12 +2787,12 @@ function basketMetrics(basket) {
   const totalLots = basket.entries.reduce((s, e) => s + (e.lots || 0), 0);
   const avgLot = basket.entries.length ? totalLots / basket.entries.length : 0;
   // Adaptive activity within this basket cycle (Tier 1 mechanic, 2026-05-02).
-  // hadAdaptive = at least one entry tagged 'adaptive' (engine flips
-  // adaptive_active sticky on first such entry; flag persists until basket
-  // close per spec).
-  const hadAdaptive = basket.entries.some(e => (e.tag || "").toLowerCase() === "adaptive");
+  // hadAdaptive = at least one entry tagged 'adaptive_<level>' (engine
+  // flips adaptive_active sticky on first such entry; flag persists until
+  // basket close per spec).
+  const hadAdaptive = basket.entries.some(e => (e.tag || "").toLowerCase().startsWith("adaptive"));
   const adaptiveEntryCount = basket.entries.filter(
-    e => (e.tag || "").toLowerCase() === "adaptive"
+    e => (e.tag || "").toLowerCase().startsWith("adaptive")
   ).length;
   // Sum of broker-exact pnl_net per entry (Σ for closed entries, null for
   // still-open). For a closed basket, Σ pnl_net should equal the basket's
