@@ -861,14 +861,18 @@ function redrawComplianceBody() {
   const tSell = aggBy(r => r.side === "SELL");
   const tAll  = aggBy(() => true);
 
-  // Format USD notional compactly: $1,234,567 -> "$1.2M"; $12,345 -> "$12.3k".
-  const fmtNotional = (usd) => {
-    if (!usd || !isFinite(usd)) return "—";
+  // Format USD compactly: $1,234,567 -> "$1.2M"; $12,345 -> "$12.3k".
+  const fmtUsd = (usd) => {
+    if (usd == null || !isFinite(usd)) return "—";
     const abs = Math.abs(usd);
     if (abs >= 1e6) return "$" + (usd / 1e6).toFixed(2) + "M";
     if (abs >= 1e3) return "$" + (usd / 1e3).toFixed(1) + "k";
     return "$" + usd.toFixed(0);
   };
+
+  // Leverage from policy_config (bundle.py exposes risk.leverage_implied = 500
+  // by default for Vantage ECN). Falls back to 500 if missing.
+  const leverage = bundle?.policy_config?.risk?.leverage_implied || 500;
 
   const renderTotalsRow = (label, t, accent) => {
     const pnlCell = (t.pnl == null)
@@ -876,8 +880,11 @@ function redrawComplianceBody() {
       : `<span class="${t.pnl >= 0 ? 'ok' : 'bad'}">${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>`;
     const entryCell = t.avgEntry == null ? `<span class="muted">—</span>` : fmtPrice(t.avgEntry);
     const exitCell  = t.avgExit  == null ? `<span class="muted">—</span>` : fmtPrice(t.avgExit);
-    // Lots cell: "0.43 lots ≈ $36.5k"
-    const lotsCell = `${t.lots.toFixed(2)} lots <span class="muted" title="USD notional at avg entry × historical GBPUSD per year">≈ ${fmtNotional(t.notionalUsd)}</span>`;
+    // Margin required = notional / leverage. With 1:500 leverage and $36k
+    // notional, the broker only ties up $73 of account equity. That's the
+    // figure that matters for "how much capital does this basket consume?"
+    const marginUsd = t.notionalUsd / leverage;
+    const lotsCell = `${t.lots.toFixed(2)} lots <span class="muted" title="Margin required (USD) = notional / leverage. Notional = lots × 100,000 × entry_price × GBPUSD per year. Leverage = 1:${leverage}.">≈ ${fmtUsd(marginUsd)} margin</span>`;
     return `<tr class="totals ${accent}">
       <td class="totals-label" colspan="5">${label} <span class="muted">(${t.count} trades)</span></td>
       <td class="num">${entryCell}</td>
