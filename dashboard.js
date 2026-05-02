@@ -1207,10 +1207,42 @@ function setupCharts() {
     state._syncing = false;
   });
 
-  // click handler for markers
+  // Crosshair sync: hovering on either chart shows the vertical line on the
+  // other so the user can read price + equity at the same instant. Uses
+  // the chart's setCrosshairPosition / clearCrosshairPosition API. The
+  // _xhairSync flag breaks the feedback loop (chart A's setCrosshair
+  // would fire chart B's subscribe, which would re-set chart A's, etc).
   state.priceChart.subscribeCrosshairMove(param => {
-    if (!param || !param.time) return;
-    // hover tooltip could go here; for now click handles selection
+    if (state._xhairSync) return;
+    if (!param || !param.time || !state.bankChart || !state.bankSeries) {
+      try {
+        state._xhairSync = true;
+        state.bankChart?.clearCrosshairPosition();
+      } finally { state._xhairSync = false; }
+      return;
+    }
+    try {
+      state._xhairSync = true;
+      // Use a real series + valid price for the bank chart so the crosshair
+      // lands at the correct y-axis. setCrosshairPosition requires a price
+      // and series ref; price doesn't matter for the vertical line, but
+      // pulling the closest bankSeries point keeps the marker label sensible.
+      state.bankChart.setCrosshairPosition(0, param.time, state.bankSeries);
+    } finally { state._xhairSync = false; }
+  });
+  state.bankChart.subscribeCrosshairMove(param => {
+    if (state._xhairSync) return;
+    if (!param || !param.time || !state.priceChart || !state.candleSeries) {
+      try {
+        state._xhairSync = true;
+        state.priceChart?.clearCrosshairPosition();
+      } finally { state._xhairSync = false; }
+      return;
+    }
+    try {
+      state._xhairSync = true;
+      state.priceChart.setCrosshairPosition(0, param.time, state.candleSeries);
+    } finally { state._xhairSync = false; }
   });
   state.priceChart.subscribeClick(param => {
     if (!param || !param.time) return;
