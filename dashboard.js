@@ -872,7 +872,9 @@ function redrawComplianceBody() {
 
   // Leverage from policy_config (bundle.py exposes risk.leverage_implied = 500
   // by default for Vantage ECN). Falls back to 500 if missing.
-  const leverage = bundle?.policy_config?.risk?.leverage_implied || 500;
+  // Read from the global currentBundle since redrawComplianceBody doesn't
+  // have a bundle parameter.
+  const leverage = state.currentBundle?.policy_config?.risk?.leverage_implied || 500;
 
   const renderTotalsRow = (label, t, accent) => {
     const pnlCell = (t.pnl == null)
@@ -2074,7 +2076,7 @@ function showTraceOverlay(a) {
           },
         });
         // Draw dashed lines from each pending entry to this close
-        const pending = side === "buy" ? pendingBuy : pendingSell;
+        // (reuses the `pending` array declared above for the basket ID)
         const lineColor = side === "buy" ? "rgba(63,185,80,0.35)" : "rgba(248,81,73,0.35)";
         for (const entry of pending) {
           basketLines.push({ fromT: entry.t, fromV: entry.v, toT: closeT, toV: cp, color: lineColor });
