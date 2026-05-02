@@ -2251,17 +2251,35 @@ function showTraceOverlay(a) {
     //   residual = stake + net - withdrawn  (only valid for blowup_loss /
     //   blowup_profit; survived/eot accounts are handled by their last
     //   snapshot which IS at eval-end).
+    // Forward-snap: nearest candle whose time is >= t (strictly upward,
+    // never backward). Used for end-of-life synthetic points so the
+    // displayed marker is *after* the actual blowup, not rounded back into
+    // the past where there's stale data.
+    function snapToCandleForward(t) {
+      if (!candleTimes.length) return t;
+      let lo = 0, hi = candleTimes.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (candleTimes[mid] < t) lo = mid + 1;
+        else hi = mid;
+      }
+      return candleTimes[lo];
+    }
     const eqPoints = dedup(eqSnaps, "eq");
+    // Compute the chart-time anchor for end-of-life events. We use a
+    // single forward-snapped value for BOTH the equity drop AND the
+    // cumulative-withdrawn flatline endpoint so they line up visually
+    // rather than ending at slightly different x-coords.
+    let endOfLifeT = null;
     if (a.outcome === "blowup_loss" || a.outcome === "blowup_profit") {
       const blowupT = toUnix(a.blowup_time);
       if (blowupT != null) {
+        endOfLifeT = snapToCandleForward(blowupT);
         const residual = (a.stake || 0) + (a.net || 0) - (a.withdrawn || 0);
-        const synthT = snapToCandle(blowupT);
-        // Only append if it's after the last existing point and the residual
-        // differs meaningfully from the last shown equity (else it's a no-op).
+        // Only append if it's after the last existing point.
         const last = eqPoints[eqPoints.length - 1];
-        if (!last || synthT > last.time) {
-          eqPoints.push({ time: synthT, value: Math.max(0, residual) });
+        if (!last || endOfLifeT > last.time) {
+          eqPoints.push({ time: endOfLifeT, value: Math.max(0, residual) });
         }
       }
     }
@@ -2293,6 +2311,17 @@ function showTraceOverlay(a) {
         if (t === lastT) cumPoints[cumPoints.length - 1] = { time: t, value: cum };
         else cumPoints.push({ time: t, value: cum });
         lastT = t;
+      }
+      // Extend the cumulative-withdrawn line flat to end-of-life so it
+      // visually aligns with the equity curve's final drop. Without this,
+      // the withdrawn line would stop at the last withdrawal time which
+      // is often minutes BEFORE the blowup, making it look like the
+      // account "stopped earning" before it actually died.
+      if (endOfLifeT != null && cumPoints.length > 0) {
+        const last = cumPoints[cumPoints.length - 1];
+        if (endOfLifeT > last.time) {
+          cumPoints.push({ time: endOfLifeT, value: last.value });
+        }
       }
       state.traceWithdrawnSeries.setData(cumPoints);
 
