@@ -802,16 +802,42 @@ function redrawComplianceBody() {
   //   - lot-weighted average exit price (uses only closed rows)
   // Buy and sell get separate totals + a combined row, since avg entry/exit
   // for a mixed set of buys and sells doesn't have a coherent meaning.
+  // GBPUSD yearly averages (mirrors v3/sim/realism.py:GBPUSD_BY_YEAR).
+  // Used to express EURGBP positions in USD on the totals row, since
+  // accounts are USD-denominated. For years outside the table, falls
+  // back to the last known year. Notional in USD per row =
+  //   lots × 100_000 × entry_price (EURGBP) × GBPUSD[year]
+  // This gives EUR notional × GBPUSD = USD notional (since 1 EUR of
+  // EURGBP exposure = entry_price GBP = entry_price × GBPUSD USD).
+  const GBPUSD_BY_YEAR = {
+    2002: 1.504, 2003: 1.636, 2004: 1.833, 2005: 1.820,
+    2006: 1.843, 2007: 2.002, 2008: 1.853, 2009: 1.566,
+    2010: 1.546, 2011: 1.604, 2012: 1.585, 2013: 1.565,
+    2014: 1.648, 2015: 1.529, 2016: 1.356, 2017: 1.289,
+    2018: 1.335, 2019: 1.277, 2020: 1.284, 2021: 1.376,
+    2022: 1.233, 2023: 1.244, 2024: 1.277,
+  };
+  const _gbpusdYears = Object.keys(GBPUSD_BY_YEAR).map(Number).sort();
+  const _gbpusdLastYear = _gbpusdYears[_gbpusdYears.length - 1];
+  const gbpusdFor = (t) => {
+    if (!t) return GBPUSD_BY_YEAR[_gbpusdLastYear];
+    const year = new Date(t * 1000).getUTCFullYear();
+    return GBPUSD_BY_YEAR[year] ?? GBPUSD_BY_YEAR[_gbpusdLastYear];
+  };
+
   const aggBy = (filterFn) => {
     let sumLots = 0, sumPnL = 0, hasPnL = false;
     let weightedEntry = 0, sumLotsEntry = 0;
     let weightedExit = 0, sumLotsExit = 0;
+    let notionalUsd = 0;
     for (const r of rows.filter(filterFn)) {
       const lots = r.actual_lot || 0;
       sumLots += lots;
       if (r.price != null) {
         weightedEntry += r.price * lots;
         sumLotsEntry += lots;
+        // USD notional = lots × 100k × EURGBP × GBPUSD per row's year
+        notionalUsd += lots * 100000 * r.price * gbpusdFor(r.time);
       }
       if (r.exit_price != null) {
         weightedExit += r.exit_price * lots;
@@ -827,6 +853,7 @@ function redrawComplianceBody() {
       pnl: hasPnL ? sumPnL : null,
       avgEntry: sumLotsEntry > 0 ? weightedEntry / sumLotsEntry : null,
       avgExit:  sumLotsExit  > 0 ? weightedExit  / sumLotsExit  : null,
+      notionalUsd,
       count: rows.filter(filterFn).length,
     };
   };
@@ -834,18 +861,29 @@ function redrawComplianceBody() {
   const tSell = aggBy(r => r.side === "SELL");
   const tAll  = aggBy(() => true);
 
+  // Format USD notional compactly: $1,234,567 -> "$1.2M"; $12,345 -> "$12.3k".
+  const fmtNotional = (usd) => {
+    if (!usd || !isFinite(usd)) return "—";
+    const abs = Math.abs(usd);
+    if (abs >= 1e6) return "$" + (usd / 1e6).toFixed(2) + "M";
+    if (abs >= 1e3) return "$" + (usd / 1e3).toFixed(1) + "k";
+    return "$" + usd.toFixed(0);
+  };
+
   const renderTotalsRow = (label, t, accent) => {
     const pnlCell = (t.pnl == null)
       ? `<span class="muted">—</span>`
       : `<span class="${t.pnl >= 0 ? 'ok' : 'bad'}">${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}</span>`;
     const entryCell = t.avgEntry == null ? `<span class="muted">—</span>` : fmtPrice(t.avgEntry);
     const exitCell  = t.avgExit  == null ? `<span class="muted">—</span>` : fmtPrice(t.avgExit);
+    // Lots cell: "0.43 lots ≈ $36.5k"
+    const lotsCell = `${t.lots.toFixed(2)} lots <span class="muted" title="USD notional at avg entry × historical GBPUSD per year">≈ ${fmtNotional(t.notionalUsd)}</span>`;
     return `<tr class="totals ${accent}">
       <td class="totals-label" colspan="5">${label} <span class="muted">(${t.count} trades)</span></td>
       <td class="num">${entryCell}</td>
       <td class="num">${exitCell}</td>
       <td class="num">${pnlCell}</td>
-      <td class="num">${t.lots.toFixed(2)} lots</td>
+      <td class="num">${lotsCell}</td>
       <td></td>
       <td></td>
     </tr>`;
