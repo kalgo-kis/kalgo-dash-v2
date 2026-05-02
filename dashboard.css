@@ -1632,6 +1632,23 @@ header .subtitle {
   border-radius: 6px;
   padding: 10px 12px 12px;
   margin: 0;
+  /* min-width:0 lets each fieldset shrink to its grid track even when its
+     content (long help text, multi-line legend) would otherwise push the
+     intrinsic width past the column slot. Without it, sections with long
+     help paragraphs (like 'Adaptive sizing + cut-bottom') overflow into
+     the next column. */
+  min-width: 0;
+}
+/* Field-row content must wrap inside the fieldset rather than push the
+   column wider. Same root cause as above. */
+.experiment-runner .field-row,
+.experiment-runner .field-row label,
+.experiment-runner .field-help {
+  min-width: 0;
+  word-wrap: break-word;
+}
+.experiment-runner .field-help {
+  white-space: normal;
 }
 .experiment-runner legend {
   padding: 0 6px;
