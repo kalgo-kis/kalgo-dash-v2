@@ -1,7 +1,19 @@
 {
-  "count": 3,
-  "bundled_count": 3,
+  "count": 4,
+  "bundled_count": 4,
   "experiments": [
+    {
+      "experiment_id": "carlos_c01_20260502_122051",
+      "fold": "fold4",
+      "eval_start": "2020-01-01",
+      "eval_end": "2021-12-31",
+      "total_return": 1.7137724813340196,
+      "total_accounts": 4,
+      "blowup_count": 3,
+      "bank_end": 8568.862406670098,
+      "timestamp": "2026-05-02T12:20:52",
+      "bundled": true
+    },
     {
       "experiment_id": "kalgo-kis_k-test4_20260502_195736",
       "fold": "fold4",
@@ -11,7 +23,7 @@
       "total_accounts": 4,
       "blowup_count": 3,
       "bank_end": 9432.2251773801,
-      "timestamp": "2026-05-02T19:57:38",
+      "timestamp": "2026-05-02T11:00:54",
       "bundled": true
     },
     {
@@ -23,7 +35,7 @@
       "total_accounts": 9,
       "blowup_count": 8,
       "bank_end": 5229.479678900118,
-      "timestamp": "2026-04-30T00:28:52",
+      "timestamp": "2026-05-02T10:35:39",
       "bundled": true
     },
     {
@@ -35,7 +47,7 @@
       "total_accounts": 7,
       "blowup_count": 6,
       "bank_end": null,
-      "timestamp": "2026-04-16T15:31:07",
+      "timestamp": "2026-05-02T10:35:39",
       "bundled": true
     }
   ]
