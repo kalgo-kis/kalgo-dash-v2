@@ -2143,45 +2143,49 @@ function showTraceOverlay(a) {
 
   function buildTraceMarkers() {
     const markers = [];
+    // Choose marker bucket size based on what the chart is currently showing.
+    // In M1 mode (account detail) markers can land on the exact minute; in
+    // M15 mode (fleet overview) we bucket to 15-min so markers attach to
+    // existing candles. Lightweight Charts requires marker times to match
+    // existing data points exactly.
+    const bucketSec = state._isM1Active ? 60 : 900;
+    const bucket = (t) => Math.floor(t / bucketSec) * bucketSec;
     if (state._traceShowAllWd) {
       for (const ev of wdEvents) {
-        const t15 = Math.floor(ev.time_unix / 900) * 900;
-        markers.push({ time: t15, position: "aboveBar", color: COLORS.gold,
+        markers.push({ time: bucket(ev.time_unix), position: "aboveBar", color: COLORS.gold,
           shape: "arrowDown", text: `$${Math.round(ev.amount)}`, size: 0 });
       }
     } else if (totalWd > 0) {
       // Show total withdrawn near the end of the account's life
       const endT = blowupT || (toUnix(a.deploy_time) + 86400);
-      const nearEnd = Math.floor((endT - 3600) / 900) * 900; // 1 hour before close
+      const nearEnd = bucket(endT - 3600); // 1 hour before close
       markers.push({ time: nearEnd, position: "aboveBar", color: COLORS.gold,
         shape: "arrowDown", text: `wd $${Math.round(totalWd)}`, size: 0 });
     }
     if (a.blowup && blowupT) {
-      const t15 = Math.floor(blowupT / 900) * 900;
-      markers.push({ time: t15, position: "aboveBar", color: COLORS.red,
+      markers.push({ time: bucket(blowupT), position: "aboveBar", color: COLORS.red,
         shape: "square", text: "BLOWUP", size: 1 });
     }
     // Incremental stop-out markers: each `position_close` event with
     // reason='stopout' is the broker closing the worst position to satisfy
     // margin (Vantage incremental stop-out, MASTER_PLAN.md pinned). One
-    // marker per stopout time bucket — coalesced to the same M15 candle so
-    // a tight burst of stopouts shows as a single tick.
+    // marker per stopout time bucket — coalesced to the same candle so a
+    // tight burst of stopouts shows as a single tick.
     const entries = (a.trace?.grid_entry_events) || [];
     const stopBuckets = new Set();
     for (const e of entries) {
       if (e.exit_reason !== "stopout") continue;
       const t = e.exit_time_unix;
       if (!t) continue;
-      const bucket = Math.floor(t / 900) * 900;
-      stopBuckets.add(bucket);
+      stopBuckets.add(bucket(t));
     }
     for (const t of stopBuckets) {
       // Only show standalone stopouts — skip the bucket that's adjacent
-      // to the BLOWUP marker (within one M15 candle), since BLOWUP is
+      // to the BLOWUP marker (within one bucket of it), since BLOWUP is
       // already there and they'd visually collide.
       if (a.blowup && blowupT) {
-        const blowupBucket = Math.floor(blowupT / 900) * 900;
-        if (Math.abs(t - blowupBucket) <= 900) continue;
+        const blowupBucket = bucket(blowupT);
+        if (Math.abs(t - blowupBucket) <= bucketSec) continue;
       }
       markers.push({
         time: t, position: "aboveBar", color: "#d29922",
