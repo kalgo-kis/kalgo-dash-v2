@@ -522,13 +522,16 @@ function buildComplianceRows(bundle) {
           expectedLot = tier.expected_lot;
           lotOk = Math.abs(actualLot - expectedLot) < 0.005;
           if (isReAnchor) {
-            // Spacing is intentionally a multiple of tier.spacing_pips.
-            expectedSpacing = tier.spacing_pips;
+            // Re-anchor entries use the BASE-TIER global grid regardless
+            // of the basket's active tier (per user's spec: when the basket
+            // wakes up after a cooldown, find the next nearest 10pip line).
+            // Spacing from the previous fill is therefore a positive
+            // integer multiple of base_tier.spacing_pips. Lot is still
+            // tier-correct (we're at depth N in tier X).
+            const baseTier = tiers[0] || tier;
+            expectedSpacing = baseTier.spacing_pips;
             if (s.lastPrice !== null) {
               actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
-              // Accept any positive multiple of tier.spacing_pips (within
-              // float tolerance). E.g. 10 / 20 / 30 / 40 pip spacings are
-              // all valid for a base tier with spacing=10.
               const ratio = actualSpacing / expectedSpacing;
               const nearestInt = Math.round(ratio);
               spacingOk = nearestInt >= 1
