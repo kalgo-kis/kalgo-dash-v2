@@ -53,6 +53,13 @@ const state = {
   currentBundle: null,
   priceChart: null,
   bankChart: null,
+  // T2 step 2 (2026-05-08): per-account Risk gauge (R) chart, hidden until
+  // showTraceOverlay populates it from trace.r_timeline.
+  riskChart: null,
+  riskRSeries: null,
+  riskBuySeries: null,
+  riskSellSeries: null,
+  riskAxisLog: false,    // linear by default; user toggles via header button
   candleSeries: null,
   bankSeries: null,
   capitalLine: null,
@@ -1190,11 +1197,19 @@ function clearCharts() {
   if (state.bankChart) {
     try { state.bankChart.remove(); } catch {}
   }
+  if (state.riskChart) {
+    try { state.riskChart.remove(); } catch {}
+  }
   const pc = document.getElementById("price-chart");
   const bc = document.getElementById("bank-chart");
+  const rc = document.getElementById("risk-chart");
   if (pc) pc.innerHTML = "";
   if (bc) bc.innerHTML = "";
-  state.priceChart = null; state.bankChart = null;
+  if (rc) rc.innerHTML = "";
+  const rcSection = document.getElementById("risk-chart-section");
+  if (rcSection) rcSection.style.display = "none";
+  state.priceChart = null; state.bankChart = null; state.riskChart = null;
+  state.riskRSeries = null; state.riskBuySeries = null; state.riskSellSeries = null;
   state.candleSeries = null; state.bankSeries = null;
   state.hwmSeries = null;
   state._basketBreakEvenSeries = null;
@@ -1241,6 +1256,16 @@ function setupCharts() {
     ...commonChartOpts(bcEl.clientHeight || 360),
     width: bcEl.clientWidth,
   });
+  // T2 step 2: dedicated Risk Gauge chart, only populated in account-detail
+  // mode (when bundle has trace.r_timeline). Created up front so the time
+  // axis can be wired into the price/bank sync below.
+  const rcEl = document.getElementById("risk-chart");
+  if (rcEl) {
+    state.riskChart = LightweightCharts.createChart(rcEl, {
+      ...commonChartOpts(rcEl.clientHeight || 360),
+      width: rcEl.clientWidth,
+    });
+  }
 
   state.candleSeries = state.priceChart.addCandlestickSeries({
     upColor: "#5a6a80", downColor: "#353f50",
@@ -1290,9 +1315,11 @@ function setupCharts() {
   const ro = new ResizeObserver(() => {
     if (state.priceChart) state.priceChart.resize(pcEl.clientWidth, pcEl.clientHeight);
     if (state.bankChart) state.bankChart.resize(bcEl.clientWidth, bcEl.clientHeight);
+    if (state.riskChart && rcEl) state.riskChart.resize(rcEl.clientWidth, rcEl.clientHeight);
   });
   ro.observe(pcEl);
   ro.observe(bcEl);
+  if (rcEl) ro.observe(rcEl);
 
   // Sync bank chart to the price chart by WALL-CLOCK time (not logical index).
   // Logical sync fails because the charts have very different point counts
@@ -1323,6 +1350,11 @@ function setupCharts() {
     state._syncing = true;
     try { state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
     catch (e) { /* ignore */ }
+    // Mirror to risk chart only when it has data (account-detail mode).
+    if (state.riskChart && state.riskRSeries) {
+      try { state.riskChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
+      catch (e) { /* ignore */ }
+    }
     state._syncing = false;
   });
   state.bankChart.timeScale().subscribeVisibleTimeRangeChange(r => {
@@ -1331,8 +1363,28 @@ function setupCharts() {
     state._syncing = true;
     try { state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
     catch (e) { /* ignore */ }
+    if (state.riskChart && state.riskRSeries) {
+      try { state.riskChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
+      catch (e) { /* ignore */ }
+    }
     state._syncing = false;
   });
+  if (state.riskChart) {
+    state.riskChart.timeScale().subscribeVisibleTimeRangeChange(r => {
+      if (!r || state._syncing) return;
+      if (!state.riskRSeries) return; // Only emit when chart actually has data
+      state._syncing = true;
+      try {
+        if (state.priceChart && state.candleSeries) {
+          state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to });
+        }
+        if (state.bankChart && state.bankSeries) {
+          state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to });
+        }
+      } catch (e) { /* ignore */ }
+      state._syncing = false;
+    });
+  }
 
   // Crosshair sync: hovering on either chart shows the vertical line on the
   // other so the user can read price + equity at the same instant. Uses
@@ -1995,6 +2047,19 @@ function clearTraceOverlay() {
     state.bankChart.removeSeries(state.traceWithdrawnSeries);
     state.traceWithdrawnSeries = null;
   }
+  // T2 step 2: tear down risk-gauge series + hide the chart section.
+  for (const key of ["riskRSeries", "riskBuySeries", "riskSellSeries"]) {
+    if (state[key]) {
+      try { state.riskChart && state.riskChart.removeSeries(state[key]); } catch (e) {}
+      state[key] = null;
+    }
+  }
+  const rcSection = document.getElementById("risk-chart-section");
+  if (rcSection) rcSection.style.display = "none";
+  const rcTitle = document.getElementById("risk-chart-title");
+  if (rcTitle) rcTitle.textContent = "Risk Gauge (R) · select an account";
+  const rLogBtn = document.getElementById("toggle-risk-log-btn");
+  if (rLogBtn) rLogBtn.onclick = null;
   const wdBtn = document.getElementById("toggle-withdrawn-line-btn");
   if (wdBtn) {
     wdBtn.style.display = "none";
@@ -2527,6 +2592,103 @@ function showTraceOverlay(a) {
     if (priceRange) {
       state._syncing = true;
       try { state.bankChart.timeScale().setVisibleRange({ from: priceRange.from, to: priceRange.to }); }
+      catch (e) { /* ignore */ }
+      state._syncing = false;
+    }
+  }
+
+  // T2 step 2 (2026-05-08): Risk gauge (R) chart, populated from
+  // trace.r_timeline. Three lines (R, R_buy, R_sell) plus dashed price
+  // lines at k_cut=0.05 and k_hedge=0.03 (the v1 spec defaults). Hidden
+  // until an account with r_timeline is selected.
+  const rTimeline = trace.r_timeline || [];
+  const rcSection = document.getElementById("risk-chart-section");
+  const rcTitle = document.getElementById("risk-chart-title");
+  if (state.riskChart && rTimeline.length > 0) {
+    if (rcSection) rcSection.style.display = "";
+    if (rcTitle) rcTitle.textContent = `Risk Gauge (R) · account #${a.num}`;
+
+    // Snap each r_timeline timestamp onto the nearest M15 candle so the
+    // risk chart shares the price chart's logical schedule. Same dedup
+    // pattern as the equity series above.
+    const candleTimes = (state.currentBundle.candles_m15 || []).map(c => c.t);
+    function snapR(t) {
+      if (!candleTimes.length) return t;
+      let lo = 0, hi = candleTimes.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (candleTimes[mid] < t) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo > 0 && Math.abs(candleTimes[lo - 1] - t) < Math.abs(candleTimes[lo] - t)) {
+        return candleTimes[lo - 1];
+      }
+      return candleTimes[lo];
+    }
+    const buildRSeries = (key) => {
+      const out = [];
+      let lastT = null;
+      for (const p of rTimeline) {
+        const v = p[key];
+        if (p.time_unix == null || v == null) continue;
+        const t = snapR(p.time_unix);
+        if (t === lastT) out[out.length - 1] = { time: t, value: v };
+        else out.push({ time: t, value: v });
+        lastT = t;
+      }
+      return out;
+    };
+
+    state.riskRSeries = state.riskChart.addLineSeries({
+      color: "#f0883e", lineWidth: 2, title: "R",
+      priceLineVisible: false,
+    });
+    state.riskBuySeries = state.riskChart.addLineSeries({
+      color: "#79c0ff", lineWidth: 1, title: "R_buy",
+      priceLineVisible: false, lastValueVisible: false,
+    });
+    state.riskSellSeries = state.riskChart.addLineSeries({
+      color: "#d2a8ff", lineWidth: 1, title: "R_sell",
+      priceLineVisible: false, lastValueVisible: false,
+    });
+    state.riskRSeries.setData(buildRSeries("r"));
+    state.riskBuySeries.setData(buildRSeries("r_buy"));
+    state.riskSellSeries.setData(buildRSeries("r_sell"));
+
+    // k_cut + k_hedge dashed reference lines (per spec § 7 v1 defaults).
+    state.riskRSeries.createPriceLine({
+      price: 0.05, color: "#f85149", lineWidth: 1, lineStyle: 2,
+      axisLabelVisible: true, title: "k_cut",
+    });
+    state.riskRSeries.createPriceLine({
+      price: 0.03, color: "#d29922", lineWidth: 1, lineStyle: 2,
+      axisLabelVisible: true, title: "k_hedge",
+    });
+
+    // Apply axis mode (linear default; user toggles via header button).
+    const applyRiskAxisMode = () => {
+      const mode = state.riskAxisLog
+        ? LightweightCharts.PriceScaleMode.Logarithmic
+        : LightweightCharts.PriceScaleMode.Normal;
+      try { state.riskChart.priceScale("right").applyOptions({ mode }); } catch (e) {}
+      const btn = document.getElementById("toggle-risk-log-btn");
+      if (btn) btn.textContent = state.riskAxisLog ? "Log axis" : "Linear axis";
+    };
+    applyRiskAxisMode();
+    const rLogBtn = document.getElementById("toggle-risk-log-btn");
+    if (rLogBtn) {
+      rLogBtn.onclick = () => {
+        state.riskAxisLog = !state.riskAxisLog;
+        applyRiskAxisMode();
+      };
+    }
+
+    // Sync the risk chart's visible range with the price chart's once it
+    // has data so all three panels open in agreement.
+    const priceRange2 = state.priceChart.timeScale().getVisibleRange();
+    if (priceRange2) {
+      state._syncing = true;
+      try { state.riskChart.timeScale().setVisibleRange({ from: priceRange2.from, to: priceRange2.to }); }
       catch (e) { /* ignore */ }
       state._syncing = false;
     }

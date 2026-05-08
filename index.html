@@ -173,6 +173,23 @@
       <div id="bank-chart" class="chart tall"></div>
     </section>
 
+    <section class="chart-section" id="risk-chart-section" style="display:none;">
+      <div class="chart-header">
+        <span class="chart-title" id="risk-chart-title">Risk Gauge (R) · select an account</span>
+        <span class="chart-legend">
+          <span class="leg-arrow" style="color:#f0883e">―</span> R = max(R_buy, R_sell)
+          <span class="leg-arrow" style="color:#79c0ff">―</span> R_buy
+          <span class="leg-arrow" style="color:#d2a8ff">―</span> R_sell
+          &nbsp;|&nbsp;
+          <span class="leg-arrow" style="color:#f85149">- - -</span> k_cut = 0.05
+          <span class="leg-arrow" style="color:#d29922">- - -</span> k_hedge = 0.03
+          &nbsp;|&nbsp;
+          <button id="toggle-risk-log-btn" class="chart-toggle-btn">Linear axis</button>
+        </span>
+      </div>
+      <div id="risk-chart" class="chart tall"></div>
+    </section>
+
     <section class="accounts-section">
       <div class="accounts-table-wrap" id="accounts-table-wrap">
         <table class="accounts-table" id="accounts-table">

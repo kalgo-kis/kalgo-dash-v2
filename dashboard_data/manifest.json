@@ -1,7 +1,19 @@
 {
-  "count": 4,
-  "bundled_count": 4,
+  "count": 5,
+  "bundled_count": 5,
   "experiments": [
+    {
+      "experiment_id": "bench_fold4_repro_T2step1",
+      "fold": "fold4",
+      "eval_start": "2020-01-01",
+      "eval_end": "2021-12-31",
+      "total_return": 1.5009379252480304,
+      "total_accounts": 12,
+      "blowup_count": 11,
+      "bank_end": 7504.6896262401515,
+      "timestamp": "2026-05-08T23:42:00",
+      "bundled": true
+    },
     {
       "experiment_id": "carlos_c01_20260502_122051",
       "fold": "fold4",
