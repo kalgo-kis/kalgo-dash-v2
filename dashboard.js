@@ -54,9 +54,10 @@ const state = {
   priceChart: null,
   bankChart: null,
   // T2 step 2 (2026-05-08): per-account Risk gauge (R) chart, hidden until
-  // showTraceOverlay populates it from trace.r_timeline.
+  // showTraceOverlay populates it from trace.r_timeline. Two per-side
+  // series only — max(R_buy, R_sell) is redundant given the threshold
+  // lines and the price chart, so it's intentionally not rendered.
   riskChart: null,
-  riskRSeries: null,
   riskBuySeries: null,
   riskSellSeries: null,
   riskAxisLog: false,    // linear by default; user toggles via header button
@@ -1209,7 +1210,7 @@ function clearCharts() {
   const rcSection = document.getElementById("risk-chart-section");
   if (rcSection) rcSection.style.display = "none";
   state.priceChart = null; state.bankChart = null; state.riskChart = null;
-  state.riskRSeries = null; state.riskBuySeries = null; state.riskSellSeries = null;
+  state.riskBuySeries = null; state.riskSellSeries = null;
   state.candleSeries = null; state.bankSeries = null;
   state.hwmSeries = null;
   state._basketBreakEvenSeries = null;
@@ -1351,7 +1352,7 @@ function setupCharts() {
     try { state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
     catch (e) { /* ignore */ }
     // Mirror to risk chart only when it has data (account-detail mode).
-    if (state.riskChart && state.riskRSeries) {
+    if (state.riskChart && state.riskBuySeries) {
       try { state.riskChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
       catch (e) { /* ignore */ }
     }
@@ -1363,7 +1364,7 @@ function setupCharts() {
     state._syncing = true;
     try { state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
     catch (e) { /* ignore */ }
-    if (state.riskChart && state.riskRSeries) {
+    if (state.riskChart && state.riskBuySeries) {
       try { state.riskChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
       catch (e) { /* ignore */ }
     }
@@ -1372,7 +1373,7 @@ function setupCharts() {
   if (state.riskChart) {
     state.riskChart.timeScale().subscribeVisibleTimeRangeChange(r => {
       if (!r || state._syncing) return;
-      if (!state.riskRSeries) return; // Only emit when chart actually has data
+      if (!state.riskBuySeries) return; // Only emit when chart actually has data
       state._syncing = true;
       try {
         if (state.priceChart && state.candleSeries) {
@@ -2048,7 +2049,7 @@ function clearTraceOverlay() {
     state.traceWithdrawnSeries = null;
   }
   // T2 step 2: tear down risk-gauge series + hide the chart section.
-  for (const key of ["riskRSeries", "riskBuySeries", "riskSellSeries"]) {
+  for (const key of ["riskBuySeries", "riskSellSeries"]) {
     if (state[key]) {
       try { state.riskChart && state.riskChart.removeSeries(state[key]); } catch (e) {}
       state[key] = null;
@@ -2639,28 +2640,31 @@ function showTraceOverlay(a) {
       return out;
     };
 
-    state.riskRSeries = state.riskChart.addLineSeries({
-      color: "#f0883e", lineWidth: 2, title: "R",
-      priceLineVisible: false,
-    });
+    // Two series only: R_buy and R_sell. The eye composes "max" from
+    // these directly, and the threshold lines act on the per-side series
+    // visually since either crossing k_cut would trigger a cut. A
+    // separate max(R) line was tried and removed: it just traced the
+    // higher of the two and added visual noise without new information.
     state.riskBuySeries = state.riskChart.addLineSeries({
       color: "#79c0ff", lineWidth: 1, title: "R_buy",
-      priceLineVisible: false, lastValueVisible: false,
+      priceLineVisible: false,
     });
     state.riskSellSeries = state.riskChart.addLineSeries({
       color: "#d2a8ff", lineWidth: 1, title: "R_sell",
-      priceLineVisible: false, lastValueVisible: false,
+      priceLineVisible: false,
     });
-    state.riskRSeries.setData(buildRSeries("r"));
     state.riskBuySeries.setData(buildRSeries("r_buy"));
     state.riskSellSeries.setData(buildRSeries("r_sell"));
 
     // k_cut + k_hedge dashed reference lines (per spec § 7 v1 defaults).
-    state.riskRSeries.createPriceLine({
+    // Attached to riskBuySeries arbitrarily — Lightweight Charts shares
+    // the price scale across all series on this chart, so the line
+    // renders identically regardless of which series owns it.
+    state.riskBuySeries.createPriceLine({
       price: 0.05, color: "#f85149", lineWidth: 1, lineStyle: 2,
       axisLabelVisible: true, title: "k_cut",
     });
-    state.riskRSeries.createPriceLine({
+    state.riskBuySeries.createPriceLine({
       price: 0.03, color: "#d29922", lineWidth: 1, lineStyle: 2,
       axisLabelVisible: true, title: "k_hedge",
     });
