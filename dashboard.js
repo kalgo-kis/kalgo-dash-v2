@@ -3244,8 +3244,14 @@ async function loadM1Data() {
   try {
     const b = state.currentBundle;
     const fold = b ? b.fold : "fold4";
+    // Per-fold M1 candle JSON lives in dashboard_data/. Sweep cluster 5
+    // (2026-05-08) initially tried serving these from GitHub Release
+    // assets but reverted: GitHub Releases don't set
+    // Access-Control-Allow-Origin headers, so the browser blocks the
+    // fetch. Releases retained as archival backup; active fetch path is
+    // dashboard_data/.
     const resp = await fetch(`dashboard_data/${fold}_m1.json`);
-    if (!resp.ok) throw new Error(`M1 data not found for ${fold} (only fold4_m1.json is shipped; new F1/F2/F3 folds fall back to bundle M15)`);
+    if (!resp.ok) throw new Error(`M1 data not found for ${fold}`);
     state._m1Data = await resp.json();
     return state._m1Data;
   } catch (e) {
