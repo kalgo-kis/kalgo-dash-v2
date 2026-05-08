@@ -126,7 +126,7 @@ function getFilteredSorted() {
   const source = document.getElementById("source-filter")?.value || "all";
   const userPrefix = (document.getElementById("source-user-filter")?.value || "").trim().toLowerCase();
   let list = state.manifest.experiments.slice();
-  if (fold !== "all") list = list.filter(e => e.fold === fold);
+  if (fold !== "all-filter") list = list.filter(e => e.fold === fold);
   if (onlyBundled) list = list.filter(e => e.bundled);
   if (source === "shared") list = list.filter(e => e.source === "shared");
   else if (source === "scratch") list = list.filter(e => e.source === "scratch");
@@ -1990,18 +1990,7 @@ function formatTradeTooltip(tick) {
         `price ${fmtPrice(m.price)} · sticky TP active</div>`
     );
   }
-  if (m.kind === "adaptive_cut") {
-    const pnlColor = (m.pnl >= 0) ? COLORS.green : COLORS.red;
-    const pnlSign  = (m.pnl >= 0) ? "+" : "";
-    return (
-      `<div style="color:${COLORS.orange};font-weight:600">` +
-        `${m.side} ADAPTIVE cut</div>` +
-      `<div style="color:${COLORS.textMuted};margin-top:2px">` +
-        `closed @ ${fmtPrice(m.price)} · ` +
-        `<span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span> ` +
-        `· entry_id ${m.entry_id ?? "—"}</div>`
-    );
-  }
+  // Adaptive cut tooltip removed 2026-05-03 (scope reduced to sizing-only).
   return `<div style="color:${COLORS.textMuted}">${JSON.stringify(m)}</div>`;
 }
 
@@ -2195,31 +2184,9 @@ function showTraceOverlay(a) {
     }
   }
 
-  // Adaptive cut events (Tier 1 spec 2026-05-02). Each cut is the broker
-  // closing one specific position with reason='adaptive_cut'. Render at the
-  // close_price as a small dark-orange circle so cuts visually separate from
-  // grid entries (light shades) and adaptive entries (cyan/gold).
-  for (const ce of (a.adaptive_cut_events || [])) {
-    const t = ce.time_unix;
-    if (!t) continue;
-    const cp = ce.close_price;
-    if (!cp) continue;
-    const isBuy = (ce.side || "").toUpperCase() === "BUY";
-    allTicks.push({
-      t: nearestCandleTime(t),
-      v: cp,
-      color: COLORS.orange,  // distinct from blue/purple basket-close ticks
-      meta: {
-        kind: "adaptive_cut",
-        side: isBuy ? "BUY" : "SELL",
-        price: cp,
-        pnl: ce.pnl,
-        commission: ce.commission,
-        time_unix: t,
-        entry_id: ce.entry_id,
-      },
-    });
-  }
+  // Adaptive cut events removed 2026-05-03 (scope reduced to sizing-only).
+  // Old bundles with `adaptive_cut_events` are silently ignored; no markers
+  // are rendered for them.
 
   allTicks.sort((a, b) => a.t - b.t);
 
@@ -2332,14 +2299,6 @@ function showTraceOverlay(a) {
         ctx.closePath();
         ctx.fill();
         // Outline so it's visible on busy charts
-        ctx.strokeStyle = "rgba(0,0,0,0.6)";
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      } else if (kind === "adaptive_cut") {
-        // Filled circle, radius 4
-        ctx.beginPath();
-        ctx.arc(x + offsetX, y + offsetY, 4, 0, Math.PI * 2);
-        ctx.fill();
         ctx.strokeStyle = "rgba(0,0,0,0.6)";
         ctx.lineWidth = 1;
         ctx.stroke();
@@ -3182,31 +3141,23 @@ function showAccountDetail(a) {
   // lifetime_cut_loss is what's been spent. Remaining = budget − spent.
   let adaptiveHTML = "";
   const adaptiveDecisions = a.adaptive_decision_events || [];
-  const adaptiveCuts = a.adaptive_cut_events || [];
-  const lifetimeProfit = a.lifetime_realized_profit || 0;
-  const lifetimeCutLoss = a.lifetime_cut_loss || 0;
-  const remainingBudget = Math.max(0, lifetimeProfit - lifetimeCutLoss);
+  // Adaptive Mechanic card — scope reduced 2026-05-03 to sizing-only
+  // (cut/budget/surrender removed). Only shows when this account had at
+  // least one adaptive decision logged.
   const decisionsByAction = adaptiveDecisions.reduce((acc, e) => {
     const k = e.action || "unknown";
     acc[k] = (acc[k] || 0) + 1;
     return acc;
   }, {});
-  if (adaptiveDecisions.length > 0 || adaptiveCuts.length > 0 || lifetimeProfit > 0 || lifetimeCutLoss > 0) {
+  if (adaptiveDecisions.length > 0) {
     const actionLabel = (k) => decisionsByAction[k] || 0;
     adaptiveHTML = `
       <div class="basket-metrics">
         <div class="basket-metrics-title">Adaptive Mechanic</div>
         <div class="basket-metrics-grid">
-          <div class="k">Lifetime realized profit (cut budget)</div>
-          <div class="v">${fmtMoney(lifetimeProfit)}</div>
-          <div class="k">Lifetime cut loss (consumed)</div>
-          <div class="v" style="color:var(--orange)">${fmtMoney(lifetimeCutLoss)}</div>
-          <div class="k">Remaining budget</div>
-          <div class="v" style="color:${remainingBudget > 0 ? 'var(--green)' : 'var(--text-muted)'}">${fmtMoney(remainingBudget)}</div>
           <div class="k">Adaptive triggers</div><div class="v">${adaptiveDecisions.length}</div>
           <div class="k">Action breakdown</div>
-          <div class="v">adaptive ${actionLabel('adaptive')} · cut_only ${actionLabel('cut_only')} · surrender ${actionLabel('surrender')} · skip ${actionLabel('skip')}</div>
-          <div class="k">Cut events</div><div class="v">${adaptiveCuts.length}</div>
+          <div class="v">adaptive ${actionLabel('adaptive')} · margin_fallback ${actionLabel('margin_fallback')} · no_resize ${actionLabel('no_resize')}</div>
         </div>
       </div>`;
   }
@@ -3299,7 +3250,7 @@ async function loadM1Data() {
     const b = state.currentBundle;
     const fold = b ? b.fold : "fold4";
     const resp = await fetch(`dashboard_data/${fold}_m1.json`);
-    if (!resp.ok) throw new Error(`M1 data not found for ${fold}`);
+    if (!resp.ok) throw new Error(`M1 data not found for ${fold} (only fold4_m1.json is shipped; new F1/F2/F3 folds fall back to bundle M15)`);
     state._m1Data = await resp.json();
     return state._m1Data;
   } catch (e) {
@@ -3451,6 +3402,9 @@ function closeDetail() {
 
 // ----- multi-fold overview -----
 const FOLD_REGIMES = {
+  // 15-yr window (canonical, 2026-05-04 PM)
+  F1: "Post-GFC", F2: "SNB/Brexit", F3: "COVID/Inflation", all: "Continuous",
+  // legacy
   fold1: "GFC", fold2: "Calm", fold3: "Brexit", fold4: "COVID", fold5: "Rate hikes"
 };
 
@@ -3852,7 +3806,6 @@ const BUNDLE_TO_FORM_MAP = {
   adaptive_percent_reduction:           b => b.policy_config?.adaptive?.percent_reduction ?? 0.5,
   adaptive_displacement_threshold_pips: b => b.policy_config?.adaptive?.displacement_threshold_pips ?? 100,
   adaptive_tp_pips:                     b => b.policy_config?.adaptive?.tp_pips_when_active ?? 10,
-  adaptive_min_wapp_improvement_pips:   b => b.policy_config?.adaptive?.min_wapp_improvement_pips ?? 5,
   // realism (display-only — no user-editable fields, but populated for visibility)
   leverage:                       b => b.policy_config?.risk?.leverage_implied,
   commission_per_lot_per_side_usd: b => b.policy_config?.realism?.commission_per_lot_per_side_usd,

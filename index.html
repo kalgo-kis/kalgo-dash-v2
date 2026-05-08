@@ -37,12 +37,20 @@
       <select id="experiment-select" class="large-select"></select>
       <label>Fold</label>
       <select id="fold-filter">
-        <option value="all">all folds</option>
-        <option value="fold1">fold1 (2008–2011 GFC)</option>
-        <option value="fold2">fold2 (2012–2015)</option>
-        <option value="fold3">fold3 (2016–2019 Brexit)</option>
-        <option value="fold4">fold4 (2020–2021 COVID)</option>
-        <option value="fold5">fold5 (2022–2024 rate hikes)</option>
+        <option value="all-filter">all folds</option>
+        <optgroup label="Current (15-yr window)">
+          <option value="F1">F1 (2010–2014 post-GFC)</option>
+          <option value="F2">F2 (2015–2019 SNB/Brexit)</option>
+          <option value="F3">F3 (2020–2024 COVID/inflation)</option>
+          <option value="all">All (2010–2024 continuous)</option>
+        </optgroup>
+        <optgroup label="Legacy">
+          <option value="fold4">fold4 (2020–2021 K_Test1)</option>
+          <option value="fold1">fold1 (2008–2011 GFC)</option>
+          <option value="fold2">fold2 (2012–2015)</option>
+          <option value="fold3">fold3 (2016–2019 Brexit)</option>
+          <option value="fold5">fold5 (2022–2024 rate hikes)</option>
+        </optgroup>
       </select>
       <label>Sort</label>
       <select id="sort-select">

@@ -1,0 +1,11 @@
+# ── Per-user Claude Code settings (host-specific paths) ────────────────
+.claude/
+
+# ── OS / editor ────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
