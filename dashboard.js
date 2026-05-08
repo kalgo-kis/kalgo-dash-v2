@@ -1398,21 +1398,12 @@ function setupCharts() {
 function buildMarkers(accounts) {
   // Account periods are now shown as colored diagonal lines (drawAccountBands)
   // with the account number labelled at the midpoint, so deploy and blowup
-  // arrow markers are intentionally omitted to reduce visual noise. Only
-  // recovery events remain as inline markers.
+  // arrow markers are intentionally omitted to reduce visual noise.
+  //
+  // Recovery-event markers were removed 2026-05-08 (sweep cluster 3) when
+  // the DEEP recovery mechanic was retired. Old bundles with
+  // `recovery_events` are silently ignored; no markers are rendered.
   const markers = [];
-  for (const a of accounts) {
-    for (const ev of (a.recovery_events || [])) {
-      const tm = toUnix(ev.time);
-      if (tm != null) {
-        markers.push({
-          time: tm, position: "aboveBar", color: COLORS.orange,
-          shape: "circle", text: `r${a.num}`,
-          _kind: "recovery", _acct: a.num,
-        });
-      }
-    }
-  }
   markers.sort((a, b) => a.time - b.time);
   return markers;
 }
@@ -1423,11 +1414,12 @@ function stripInternal(m) {
 }
 
 // Priority-tiered LOD cull. Keeps deploy+blowup first (one pair per account —
-// the most informative), then close events, then recovery events, subsampling
-// the final tier if needed to hit the target visible-count budget.
+// the most informative), then close events, subsampling the final tier if
+// needed to hit the target visible-count budget. (Recovery tier removed
+// 2026-05-08 with the DEEP recovery mechanic.)
 function cullPriceMarkers(markers, target) {
   if (markers.length <= target) return markers;
-  const priorities = ["deploy", "blowup", "close", "recovery"];
+  const priorities = ["deploy", "blowup", "close"];
   const result = [];
   for (const kind of priorities) {
     const group = markers.filter(m => m._kind === kind);
@@ -2184,9 +2176,12 @@ function showTraceOverlay(a) {
     }
   }
 
-  // Adaptive cut events removed 2026-05-03 (scope reduced to sizing-only).
-  // Old bundles with `adaptive_cut_events` are silently ignored; no markers
-  // are rendered for them.
+  // Adaptive cut events: bundle now emits these via `position_close`
+  // events with reason="adaptive_cut" (per T1_2026-05-04 spec). The
+  // close-table renderer at row 824 picks them up and shows a CUT tag.
+  // No separate marker layer is rendered on the price chart — the
+  // close events are joined to entries via entry_id and shown in the
+  // account-detail Closes table.
 
   allTicks.sort((a, b) => a.t - b.t);
 
@@ -3141,9 +3136,9 @@ function showAccountDetail(a) {
   // lifetime_cut_loss is what's been spent. Remaining = budget − spent.
   let adaptiveHTML = "";
   const adaptiveDecisions = a.adaptive_decision_events || [];
-  // Adaptive Mechanic card — scope reduced 2026-05-03 to sizing-only
-  // (cut/budget/surrender removed). Only shows when this account had at
-  // least one adaptive decision logged.
+  // Adaptive Mechanic card — Tier 1 spec (T1_2026-05-04). Cut-bottom +
+  // budget + surrender are restored as of the 2026-05-08 sweep. Only
+  // shows when this account had at least one adaptive decision logged.
   const decisionsByAction = adaptiveDecisions.reduce((acc, e) => {
     const k = e.action || "unknown";
     acc[k] = (acc[k] || 0) + 1;
@@ -3787,16 +3782,11 @@ const BUNDLE_TO_FORM_MAP = {
     const m = /\$([\d,]+)/.exec(logic);
     return m ? Number(m[1].replace(/,/g, "")) : 1000;
   },
-  // recovery
-  recovery_d_pips:           b => b.policy_config?.recovery?.displacement_threshold_pips,
-  recovery_tp_pips:          b => b.policy_config?.recovery?.recovery_tp_pips,
-  recovery_risk_pct:         b => b.policy_config?.recovery?.recovery_risk_pct,
-  recovery_max_adverse_pips: b => b.policy_config?.recovery?.recovery_max_adverse_pips,
-  // adaptive_tools (deprecated names, kept for backward compat with the
-  // existing adaptive_tools section)
-  phase1_model:       b => b.policy_config?.adaptive_tools?.phase1_model || "",
-  prob_table_active:  b => !!b.policy_config?.adaptive_tools?.prob_table_active,
-  regime_classifier:  b => b.policy_config?.adaptive_tools?.regime_classifier || "",
+  // recovery + adaptive_tools (Phase 1 ML hooks) — both removed 2026-05-08
+  // (sweep clusters 1 + 3). Form fields no longer present in
+  // harness/schema.py; bundle.py no longer emits these sections. Old
+  // bundles that still carry them are silently ignored — the optional
+  // chaining returns undefined and the form gets default values.
   // Cooldown gate (Tier 1 spec, 2026-05-02)
   entry_cooldown_minutes: b => b.policy_config?.cooldown?.entry_cooldown_minutes ?? 0,
   // Adaptive sizing + cut-bottom (Tier 1 spec, 2026-05-02)
