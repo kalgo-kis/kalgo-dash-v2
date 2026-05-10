@@ -2054,6 +2054,15 @@ function formatTradeTooltip(tick) {
     const entryLine = (m.entry_price != null)
       ? ` · from entry ${fmtPrice(m.entry_price)}`
       : "";
+    // Budget block: show before → after this cut, plus formula. The
+    // helps answer "did the cut consume what we expected" and "how
+    // much ammunition is left for further cuts on this basket cycle".
+    const hasBudget = (m.budget_before != null && m.budget_after != null);
+    const budgetBlock = hasBudget
+      ? (`<br>cut budget (${m.budget_formula || "—"}): ` +
+         `$${m.budget_before.toFixed(2)} → ` +
+         `<span style="color:${COLORS.text}">$${m.budget_after.toFixed(2)}</span> after`)
+      : (`<br>budget formula: ${m.budget_formula || "—"}`);
     return (
       idLine +
       `<div style="color:${headerColor};font-weight:600">` +
@@ -2063,8 +2072,8 @@ function formatTradeTooltip(tick) {
         `realized <span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span><br>` +
         `R<sub>before</sub> ${(m.r_before_cut ?? 0).toFixed(3)} → ` +
         `R<sub>after</sub> ${(m.r_after_cut ?? 0).toFixed(3)}<br>` +
-        `cuts this basket: $${(m.cuts_this_basket ?? 0).toFixed(2)} · ` +
-        `budget ${m.budget_formula || "—"}` +
+        `cuts this basket: $${(m.cuts_this_basket ?? 0).toFixed(2)}` +
+        budgetBlock +
       `</div>`
     );
   }
@@ -2323,6 +2332,8 @@ function showTraceOverlay(a) {
           r_before_cut: cut.r_before_cut,
           r_after_cut: cut.r_after_cut,
           cuts_this_basket: cut.cuts_this_basket,
+          budget_before: cut.budget_before,
+          budget_after: cut.budget_after,
           budget_formula: cut.budget_formula,
           entry_id: cut.entry_id,
           trade_id: tradeId,
