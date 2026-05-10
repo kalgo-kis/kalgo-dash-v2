@@ -837,14 +837,6 @@ function redrawComplianceBody() {
         // adaptive cut-bottom mechanism. Negative pnl on this exit
         // is "loss we paid by choice", not a stopout/whipsaw loss.
         tag = ` <span class="exit-tag t2-cut" title="T2 defensive cut — peeled outermost trade because R crossed k_cut">T2 CUT</span>`;
-      } else if (r.exit_reason === "hedge_terminate") {
-        // T2 § 5.3 offensive hedge bank-profit close. The trade was
-        // closed because hedge mode terminated (opposing R dropped
-        // below k_hedge). PnL can be positive (banked profit) or
-        // negative (banked the cost of hedge mode that didn't pay
-        // off). Either way it's a strategy-driven exit, not a
-        // natural TP / stopout.
-        tag = ` <span class="exit-tag hedge-exit" title="T2 hedge terminate — closed when opposing R dropped below k_hedge">HEDGE EXIT</span>`;
       }
       exitCell = `${fmtPrice(r.exit_price)}${tag}`;
     }
@@ -858,7 +850,6 @@ function redrawComplianceBody() {
       r.tier_name === 'adaptive' ? 'adaptive' : '',
       r.exit_reason === 'adaptive_cut' ? 'adaptive-cut' : '',
       r.exit_reason === 't2_cut' ? 't2-cut' : '',
-      r.exit_reason === 'hedge_terminate' ? 'hedge-exit' : '',
     ].filter(Boolean).join(' ');
     return `<tr class="${rowCls}">
       <td class="trade-id">${r.id || '—'}</td>
@@ -2039,17 +2030,10 @@ function formatTradeTooltip(tick) {
     const idLine = m.basketId
       ? `<div style="color:${COLORS.cyan};font-family:var(--font-mono),monospace;font-size:10px;margin-bottom:2px">${m.basketId}</div>`
       : "";
-    // T2 § 5.3: hedge_terminate close ends a hedge window. Surface
-    // the reason prominently so the close stands apart from a
-    // natural TP at the same price level.
-    const reasonRaw = (m.reason || "").toLowerCase();
-    const reasonLabel = reasonRaw === "hedge_terminate"
-      ? `<span style="color:${COLORS.gold};font-weight:600">hedge terminate</span>`
-      : (m.reason || "—");
     return (
       idLine +
       `<div style="color:${COLORS.text};font-weight:600">` +
-        `${m.side} basket close · ${reasonLabel}</div>` +
+        `${m.side} basket close · ${m.reason || "—"}</div>` +
       `<div style="color:${COLORS.textMuted};margin-top:2px">` +
         `price ${fmtPrice(m.price)} · ${m.positions} positions · ` +
         `<span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span></div>`
@@ -2381,80 +2365,45 @@ function showTraceOverlay(a) {
     }
   }
 
-  // T2 hedge windows (T2_2026-05-08_risk_gauge_spec.md § 5) — pair
-  // hedge_enter / hedge_exit events into time-bounded windows and
-  // expose them on the canvas overlay as translucent side-colored
-  // bands. BUY-side hedge → green tint, SELL-side hedge → red tint.
-  // Empty when no hedge_events present (k_hedge=∞).
+  // T2 hedge windows (T2_2026-05-08_risk_gauge_spec.md § 5; revised
+  // 2026-05-10 to sticky-until-basket-closes). Build hedge windows by
+  // pairing each hedge_enter event with the next basket close on the
+  // same side (the basket's natural TP / stop-out / EOT).
   //
-  // Pairing rule: per-side queue. hedge_enter pushes; the next
-  // hedge_exit on the same side closes the topmost window. Engine
-  // re-evaluates state every bar so enter/exit pairs nest cleanly.
-  // Defensive: if a stray hedge_enter has no matching exit (rare, end
-  // of fold), close the window at the account's blowup_time / EOT.
+  // The engine re-evaluates hedge_active every bar but only ever sets
+  // True (not False) — so the bundle has at most one hedge_enter per
+  // basket cycle on each side. The window ends when the basket closes,
+  // which clears hedge_active via notify_close → reset(). Defensive:
+  // if no close lands after the enter (basket open at EOT), bound the
+  // window at blowup_time / last basket_history time.
   const hedgeEvents = a.hedge_events || [];
-  const hedgeWindows = [];   // { side, fromT, toT, exit_event } per window
+  const hedgeWindows = [];
   if (hedgeEvents.length) {
-    const openBySide = { BUY: [], SELL: [] };
-    const sortedHE = [...hedgeEvents].sort((x, y) => (x.time_unix || 0) - (y.time_unix || 0));
-    for (const ev of sortedHE) {
+    const enters = hedgeEvents
+      .filter(e => e.kind === "enter")
+      .sort((x, y) => (x.time_unix || 0) - (y.time_unix || 0));
+    const closesBySide = { BUY: [], SELL: [] };
+    for (const c of (a.basket_close_events || [])) {
+      const side = (c.closed_basket || "").toUpperCase();
+      if (closesBySide[side]) closesBySide[side].push(toUnix(c.time));
+    }
+    for (const side of ["BUY", "SELL"]) closesBySide[side].sort((x, y) => x - y);
+    const fallbackEndT = (
+      toUnix(a.blowup_time) ||
+      (hedgeEvents[hedgeEvents.length - 1]?.time_unix) ||
+      0
+    );
+    for (const ev of enters) {
       const side = (ev.side || "").toUpperCase();
-      if (side !== "BUY" && side !== "SELL") continue;
-      if (ev.kind === "enter") {
-        openBySide[side].push({ side, fromT: ev.time_unix, toT: null, exit_event: null });
-      } else if (ev.kind === "exit") {
-        const queue = openBySide[side];
-        const win = queue.shift();
-        if (win) {
-          win.toT = ev.time_unix;
-          win.exit_event = ev;
-          hedgeWindows.push(win);
-        } else {
-          // Stray exit with no enter — log and ignore.
-          // (Shouldn't happen with the engine's current state machine.)
-        }
-      }
+      if (!closesBySide[side]) continue;
+      // First close on the same side strictly after the enter time
+      // marks the end of the basket cycle that hedge_active opened in.
+      const closeT = closesBySide[side].find(t => t > ev.time_unix) || fallbackEndT;
+      hedgeWindows.push({
+        side, fromT: ev.time_unix, toT: closeT,
+        enter_event: ev,
+      });
     }
-    // Close any windows still open at end of trace.
-    const fallbackEndT = (toUnix(a.blowup_time) || (sortedHE[sortedHE.length - 1]?.time_unix) || 0);
-    for (const side of ["BUY", "SELL"]) {
-      for (const win of openBySide[side]) {
-        win.toT = fallbackEndT;
-        hedgeWindows.push(win);
-      }
-    }
-    // Build a per-side coverage mask: union of all hedge windows on
-    // that side, collapsed to a list of disjoint intervals. The engine
-    // re-evaluates hedge state every bar (per user direction
-    // 2026-05-10), so a single "this side was in hedge mode for two
-    // months" shows up as thousands of short enter/exit pairs in the
-    // trace, often separated by 60s of "basket empty" pauses while
-    // the opposing basket churns. We union those into the macroscopic
-    // hedge intervals so the band drawer renders each pixel exactly
-    // once — no saturation from stacked alpha, and the band reads as
-    // "this side was in hedge mode."
-    //
-    // Algorithm: per side, sort by fromT, walk and merge any window
-    // whose fromT is ≤ current toT (i.e. true overlap). We do NOT
-    // bridge gaps: distinct hedge regimes remain distinct.
-    const mergedWindows = [];
-    for (const side of ["BUY", "SELL"]) {
-      const sideWins = hedgeWindows
-        .filter(w => w.side === side)
-        .sort((a, b) => a.fromT - b.fromT);
-      let cur = null;
-      for (const w of sideWins) {
-        if (cur && w.fromT <= cur.toT) {
-          cur.toT = Math.max(cur.toT, w.toT);
-        } else {
-          if (cur) mergedWindows.push(cur);
-          cur = { side, fromT: w.fromT, toT: w.toT };
-        }
-      }
-      if (cur) mergedWindows.push(cur);
-    }
-    hedgeWindows.length = 0;
-    hedgeWindows.push(...mergedWindows);
   }
 
   // Tag entry ticks that landed inside a hedge window AND match the
@@ -2573,8 +2522,8 @@ function showTraceOverlay(a) {
         const left = Math.min(x1, x2);
         const width = Math.max(1, Math.abs(x2 - x1));
         ctx.fillStyle = (w.side === "BUY")
-          ? "rgba(63, 185, 80, 0.12)"   // green @ 12% — bands are
-          : "rgba(248, 81, 73, 0.12)";  // pre-unioned, so no stacking
+          ? "rgba(63, 185, 80, 0.05)"   // green @ 5% — barely
+          : "rgba(248, 81, 73, 0.05)";  // visible per user direction
         ctx.fillRect(left + offsetX, offsetY, width, paneH);
       }
     }
