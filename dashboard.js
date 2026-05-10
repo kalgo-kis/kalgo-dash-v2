@@ -2036,6 +2036,24 @@ function formatTradeTooltip(tick) {
     );
   }
   // Adaptive cut tooltip removed 2026-05-03 (scope reduced to sizing-only).
+  if (m.kind === "t2_cut") {
+    const pnlColor = (m.pnl >= 0) ? COLORS.green : COLORS.red;
+    const pnlSign  = (m.pnl >= 0) ? "+" : "";
+    const sideColor = (m.side === "BUY")
+      ? (COLORS.green || "#3fb950")
+      : (COLORS.red || "#f85149");
+    return (
+      `<div style="color:${COLORS.red};font-weight:600">` +
+        `${m.side} basket · T2 cut</div>` +
+      `<div style="color:${COLORS.textMuted};margin-top:2px">` +
+        `price ${fmtPrice(m.price)} · entry #${m.entry_id ?? "—"}<br>` +
+        `realized <span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span> · ` +
+        `R<sub>before</sub> ${(m.r_before_cut ?? 0).toFixed(3)}<br>` +
+        `cuts this basket: $${(m.cuts_this_basket ?? 0).toFixed(2)} · ` +
+        `budget ${m.budget_formula || "—"}` +
+      `</div>`
+    );
+  }
   return `<div style="color:${COLORS.textMuted}">${JSON.stringify(m)}</div>`;
 }
 
@@ -2249,6 +2267,56 @@ function showTraceOverlay(a) {
   // close events are joined to entries via entry_id and shown in the
   // account-detail Closes table.
 
+  // T2 cut events (T2_2026-05-08_risk_gauge_spec.md § 4) — render the
+  // peeled-outermost trades distinctly so visual diagnosis on the price
+  // chart can confirm cuts hit the right positions when R crossed k_cut.
+  // Two layers per cut:
+  //   1. Red X mark at (close_time, close_price) — the cut event itself.
+  //   2. Solid red line from the original entry's (time, price) to the
+  //      cut point, joined by entry_id. Makes it obvious which trade
+  //      got peeled and what the realized loss spanned.
+  const t2Cuts = a.t2_cut_events || [];
+  if (t2Cuts.length) {
+    const entriesById = new Map();
+    for (const e of entries) {
+      if (e.entry_id != null) entriesById.set(e.entry_id, e);
+    }
+    for (const cut of t2Cuts) {
+      const cutT = nearestCandleTime(cut.time_unix);
+      const cutPx = cut.close_price || 0;
+      if (cutPx <= 0) continue;
+      allTicks.push({
+        t: cutT,
+        v: cutPx,
+        color: COLORS.red || "#f85149",
+        meta: {
+          kind: "t2_cut",
+          side: (cut.side || "").toUpperCase(),
+          price: cutPx,
+          pnl: cut.pnl,
+          r_before_cut: cut.r_before_cut,
+          cuts_this_basket: cut.cuts_this_basket,
+          budget_formula: cut.budget_formula,
+          entry_id: cut.entry_id,
+          time_unix: cut.time_unix,
+        },
+      });
+      // Connect the original entry to its cut point so the visual diagnosis
+      // is "this earliest-opened, furthest-from-price trade got peeled".
+      const origEntry = entriesById.get(cut.entry_id);
+      if (origEntry && origEntry.price) {
+        basketLines.push({
+          fromT: nearestCandleTime(origEntry.time_unix),
+          fromV: origEntry.price,
+          toT: cutT,
+          toV: cutPx,
+          color: "rgba(248,81,73,0.55)",   // red, more opaque than basket lines
+          isCutLine: true,                  // canvas overlay draws solid (not dashed)
+        });
+      }
+    }
+  }
+
   allTicks.sort((a, b) => a.t - b.t);
 
   // Canvas overlay drawn via requestAnimationFrame.
@@ -2321,9 +2389,9 @@ function showTraceOverlay(a) {
     ctx.rect(offsetX, offsetY, paneW, paneH);
     ctx.clip();
 
-    // Draw dashed lines from entries to their TP close
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 3]);
+    // Draw lines from entries to their close point. Basket TP / blowup
+    // lines are dashed; T2 cut lines are solid + slightly thicker so
+    // they're trivially distinguishable at a glance.
     for (const ln of basketLines) {
       const x1 = ts.timeToCoordinate(ln.fromT);
       const y1 = state.candleSeries.priceToCoordinate(ln.fromV);
@@ -2331,17 +2399,25 @@ function showTraceOverlay(a) {
       const y2 = state.candleSeries.priceToCoordinate(ln.toV);
       if (x1 === null || y1 === null || x2 === null || y2 === null) continue;
       ctx.strokeStyle = ln.color;
+      if (ln.isCutLine) {
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+      } else {
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+      }
       ctx.beginPath();
       ctx.moveTo(x1 + offsetX, y1 + offsetY);
       ctx.lineTo(x2 + offsetX, y2 + offsetY);
       ctx.stroke();
     }
     ctx.setLineDash([]);
+    ctx.lineWidth = 1;
 
-    // Draw entry and close ticks. Adaptive entries render as larger filled
-    // diamonds so they pop visually from the regular 8×2 entry rectangles.
-    // Adaptive cuts render as small filled circles (5px radius) at the cut's
-    // close price.
+    // Draw entry / close / cut ticks. Shape encodes the kind:
+    //   regular entry / TP close → 8×2 rectangle (default)
+    //   adaptive entry            → 5px diamond
+    //   T2 cut                    → 6px X mark in red
     for (const tk of allTicks) {
       const x = ts.timeToCoordinate(tk.t);
       if (x === null) continue;
@@ -2359,10 +2435,21 @@ function showTraceOverlay(a) {
         ctx.lineTo(x + offsetX - r, y + offsetY);
         ctx.closePath();
         ctx.fill();
-        // Outline so it's visible on busy charts
         ctx.strokeStyle = "rgba(0,0,0,0.6)";
         ctx.lineWidth = 1;
         ctx.stroke();
+      } else if (kind === "t2_cut") {
+        // X mark — two diagonal strokes, radius 6.
+        const r = 6;
+        ctx.strokeStyle = tk.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x + offsetX - r, y + offsetY - r);
+        ctx.lineTo(x + offsetX + r, y + offsetY + r);
+        ctx.moveTo(x + offsetX + r, y + offsetY - r);
+        ctx.lineTo(x + offsetX - r, y + offsetY + r);
+        ctx.stroke();
+        ctx.lineWidth = 1;
       } else {
         ctx.fillRect(x + offsetX - 4, y + offsetY - 1, 8, 2);
       }
