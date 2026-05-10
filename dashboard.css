@@ -1552,6 +1552,30 @@ header .subtitle {
   border-radius: 3px;
   vertical-align: middle;
 }
+/* T2 defensive cut rows: an existing grid entry that closed via
+   reason=t2_cut. Red tint distinguishes a CHOSEN loss (we cut to defend
+   a basket whose R crossed k_cut) from a natural close-at-loss inside
+   a basket cycle. The visual differentiation is exactly the question
+   the user asked the table to answer: "did this trade lose because
+   the strategy chose to peel it, or because the basket churned?". */
+.tc-table tbody tr.t2-cut {
+  background: rgba(248,81,73,0.08);
+  border-left: 2px solid #f85149;
+}
+.tc-table tbody tr.t2-cut:hover { background: rgba(248,81,73,0.18); }
+.tc-table .exit-tag.t2-cut {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: rgba(248,81,73,0.18);
+  color: #f85149;
+  border: 1px solid #6b1f1c;
+  border-radius: 3px;
+  vertical-align: middle;
+}
 .tc-table .num                     { text-align: right; font-variant-numeric: tabular-nums; }
 .tc-table .side-buy                { color: #56d364; font-weight: 600; }
 .tc-table .side-sell               { color: #f85149; font-weight: 600; }

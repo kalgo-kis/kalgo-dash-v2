@@ -831,17 +831,25 @@ function redrawComplianceBody() {
         tag = ` <span class="exit-tag stopout" title="Margin stop-out — broker closed this position to satisfy margin">S/O</span>`;
       } else if (r.exit_reason === "adaptive_cut") {
         tag = ` <span class="exit-tag adaptive-cut" title="Adaptive cut — closed by the policy to fund a cut-bottom decision">CUT</span>`;
+      } else if (r.exit_reason === "t2_cut") {
+        // T2 risk-gauge defensive cut. Distinct tag so this exit class
+        // differentiates from natural losses and from the older
+        // adaptive cut-bottom mechanism. Negative pnl on this exit
+        // is "loss we paid by choice", not a stopout/whipsaw loss.
+        tag = ` <span class="exit-tag t2-cut" title="T2 defensive cut — peeled outermost trade because R crossed k_cut">T2 CUT</span>`;
       }
       exitCell = `${fmtPrice(r.exit_price)}${tag}`;
     }
     // Row-level CSS classes: 'bad' for compliance failures, 'stopout' for
     // amber-tinted exit, 'adaptive' for cyan-tinted entry on adaptive
-    // market trades, 'adaptive-cut' for orange-tinted close on cut events.
+    // market trades, 'adaptive-cut' for orange-tinted close on adaptive
+    // cut events, 't2-cut' for red-tinted close on T2 defensive cuts.
     const rowCls = [
       r.ok ? '' : 'bad',
       r.exit_reason === 'stopout' ? 'stopout' : '',
       r.tier_name === 'adaptive' ? 'adaptive' : '',
       r.exit_reason === 'adaptive_cut' ? 'adaptive-cut' : '',
+      r.exit_reason === 't2_cut' ? 't2-cut' : '',
     ].filter(Boolean).join(' ');
     return `<tr class="${rowCls}">
       <td class="trade-id">${r.id || '—'}</td>
@@ -2039,16 +2047,22 @@ function formatTradeTooltip(tick) {
   if (m.kind === "t2_cut") {
     const pnlColor = (m.pnl >= 0) ? COLORS.green : COLORS.red;
     const pnlSign  = (m.pnl >= 0) ? "+" : "";
-    const sideColor = (m.side === "BUY")
-      ? (COLORS.green || "#3fb950")
-      : (COLORS.red || "#f85149");
+    const headerColor = (m.side === "BUY") ? COLORS.green : COLORS.red;
+    const idLine = m.trade_id
+      ? `<div style="color:${COLORS.cyan};font-family:var(--font-mono),monospace;font-size:10px;margin-bottom:2px">${m.trade_id}</div>`
+      : "";
+    const entryLine = (m.entry_price != null)
+      ? ` · from entry ${fmtPrice(m.entry_price)}`
+      : "";
     return (
-      `<div style="color:${COLORS.red};font-weight:600">` +
+      idLine +
+      `<div style="color:${headerColor};font-weight:600">` +
         `${m.side} basket · T2 cut</div>` +
       `<div style="color:${COLORS.textMuted};margin-top:2px">` +
-        `price ${fmtPrice(m.price)} · entry #${m.entry_id ?? "—"}<br>` +
-        `realized <span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span> · ` +
-        `R<sub>before</sub> ${(m.r_before_cut ?? 0).toFixed(3)}<br>` +
+        `cut at ${fmtPrice(m.price)}${entryLine}<br>` +
+        `realized <span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span><br>` +
+        `R<sub>before</sub> ${(m.r_before_cut ?? 0).toFixed(3)} → ` +
+        `R<sub>after</sub> ${(m.r_after_cut ?? 0).toFixed(3)}<br>` +
         `cuts this basket: $${(m.cuts_this_basket ?? 0).toFixed(2)} · ` +
         `budget ${m.budget_formula || "—"}` +
       `</div>`
@@ -2285,32 +2299,46 @@ function showTraceOverlay(a) {
       const cutT = nearestCandleTime(cut.time_unix);
       const cutPx = cut.close_price || 0;
       if (cutPx <= 0) continue;
+      // Side-based coloring: BUY-basket cuts in green, SELL-basket cuts
+      // in red, matching the buy-green/sell-red convention used for
+      // entries, TPs, and break-even lines elsewhere on the chart.
+      const isBuy = (cut.side || "").toUpperCase() === "BUY";
+      const cutColor = isBuy ? COLORS.green : COLORS.red;
+      const cutLineColor = isBuy
+        ? "rgba(63,185,80,0.55)"   // green @ 55% — slightly more opaque than basket lines
+        : "rgba(248,81,73,0.55)";  // red @ 55%
+      // Look up the original entry's trade ID (e.g. A4.B1.T13) so the
+      // tooltip can reference it instead of the raw broker entry_id.
+      const origEntry = entriesById.get(cut.entry_id);
+      const tradeId = origEntry ? origEntry.id : null;
       allTicks.push({
         t: cutT,
         v: cutPx,
-        color: COLORS.red || "#f85149",
+        color: cutColor,
         meta: {
           kind: "t2_cut",
           side: (cut.side || "").toUpperCase(),
           price: cutPx,
           pnl: cut.pnl,
           r_before_cut: cut.r_before_cut,
+          r_after_cut: cut.r_after_cut,
           cuts_this_basket: cut.cuts_this_basket,
           budget_formula: cut.budget_formula,
           entry_id: cut.entry_id,
+          trade_id: tradeId,
+          entry_price: origEntry?.price,
           time_unix: cut.time_unix,
         },
       });
       // Connect the original entry to its cut point so the visual diagnosis
       // is "this earliest-opened, furthest-from-price trade got peeled".
-      const origEntry = entriesById.get(cut.entry_id);
       if (origEntry && origEntry.price) {
         basketLines.push({
           fromT: nearestCandleTime(origEntry.time_unix),
           fromV: origEntry.price,
           toT: cutT,
           toV: cutPx,
-          color: "rgba(248,81,73,0.55)",   // red, more opaque than basket lines
+          color: cutLineColor,
           isCutLine: true,                  // canvas overlay draws solid (not dashed)
         });
       }
