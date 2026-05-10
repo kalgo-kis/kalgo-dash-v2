@@ -1576,6 +1576,28 @@ header .subtitle {
   border-radius: 3px;
   vertical-align: middle;
 }
+/* T2 hedge terminate rows: closed via reason=hedge_terminate.
+   Gold tint — distinct from both natural TP (no tint) and T2 cut
+   (red). Pnl can be positive (banked profit) or negative (banked the
+   premium cost of hedge mode that didn't pay off). */
+.tc-table tbody tr.hedge-exit {
+  background: rgba(210,153,34,0.10);
+  border-left: 2px solid #d29922;
+}
+.tc-table tbody tr.hedge-exit:hover { background: rgba(210,153,34,0.20); }
+.tc-table .exit-tag.hedge-exit {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  background: rgba(210,153,34,0.20);
+  color: #d29922;
+  border: 1px solid #6b4f10;
+  border-radius: 3px;
+  vertical-align: middle;
+}
 .tc-table .num                     { text-align: right; font-variant-numeric: tabular-nums; }
 .tc-table .side-buy                { color: #56d364; font-weight: 600; }
 .tc-table .side-sell               { color: #f85149; font-weight: 600; }
