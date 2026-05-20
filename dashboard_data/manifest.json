@@ -1,9 +1,41 @@
 {
-  "count": 2,
-  "bundled_count": 2,
+  "count": 4,
+  "bundled_count": 4,
   "experiments": [
     {
+      "experiment_id": "v18_regime_F1_smoke",
+      "experiment_label": "V18RegimePolicy — F1 smoke",
+      "filename": "v18_regime_F1_smoke.json",
+      "fold": "F1",
+      "eval_start": "2010-01-01",
+      "eval_end": "2014-12-31",
+      "total_return": 2.7344223,
+      "total_accounts": 7,
+      "blowup_count": 6,
+      "bank_end": 13672.11,
+      "timestamp": "2026-05-20T22:20:00",
+      "bundled": true,
+      "source": "shared"
+    },
+    {
+      "experiment_id": "v18_fnone_F1_smoke",
+      "experiment_label": "V18PolicyFNone — F1 FP1 baseline",
+      "filename": "v18_fnone_F1_smoke.json",
+      "fold": "F1",
+      "eval_start": "2010-01-01",
+      "eval_end": "2014-12-31",
+      "total_return": 0.0017465,
+      "total_accounts": 11,
+      "blowup_count": 11,
+      "bank_end": 8.73,
+      "timestamp": "2026-05-20T22:21:47",
+      "bundled": true,
+      "source": "shared"
+    },
+    {
       "experiment_id": "scratch_bench_f3_baseline",
+      "experiment_label": "bench_f3_baseline",
+      "filename": "bench_f3_baseline_T2step1.json",
       "fold": "F3",
       "eval_start": "2020-01-01",
       "eval_end": "2024-12-31",
@@ -12,10 +44,13 @@
       "blowup_count": 17,
       "bank_end": 10610.766417130335,
       "timestamp": "2026-05-08T23:56:56",
-      "bundled": true
+      "bundled": true,
+      "source": "shared"
     },
     {
       "experiment_id": "scratch_bench_fold4_repro",
+      "experiment_label": "bench_fold4_repro",
+      "filename": "bench_fold4_repro_T2step1.json",
       "fold": "fold4",
       "eval_start": "2020-01-01",
       "eval_end": "2021-12-31",
@@ -24,7 +59,8 @@
       "blowup_count": 11,
       "bank_end": 7504.6896262401515,
       "timestamp": "2026-05-08T23:42:39",
-      "bundled": true
+      "bundled": true,
+      "source": "shared"
     }
   ]
 }

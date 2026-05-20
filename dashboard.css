@@ -496,6 +496,182 @@ header .subtitle {
   overflow: hidden;
   box-shadow: var(--shadow-sm);
 }
+
+/* v18 — R_fleet stake bracket panel (one row per deploy). Lives just
+   under the bank chart so users see fleet-level sizing context next to
+   investor-level outcomes. */
+.v18-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  margin-bottom: var(--s-4);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.v18-deploys-body {
+  padding: var(--s-3) var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.v18-deploy-row {
+  display: grid;
+  grid-template-columns: 90px 70px 1fr 110px 100px;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.04);
+}
+.v18-deploy-row.cell-headers {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  padding-bottom: 0;
+}
+.v18-deploy-time {
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.v18-deploy-acct {
+  font-weight: 600;
+  color: #58a6ff;
+}
+.v18-deploy-bracket {
+  position: relative;
+  height: 22px;
+  display: flex;
+  align-items: center;
+}
+.v18-deploy-bracket-track {
+  position: absolute;
+  left: 0; right: 0;
+  height: 4px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 2px;
+}
+.v18-deploy-bracket-range {
+  position: absolute;
+  height: 4px;
+  background: linear-gradient(90deg, rgba(248,81,73,0.4), rgba(63,185,80,0.4));
+  border-radius: 2px;
+}
+.v18-deploy-bracket-pick {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  background: #3fb950;
+  border: 2px solid #161b22;
+  border-radius: 50%;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.v18-deploy-bracket-labels {
+  position: relative;
+  width: 100%;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 14px;
+}
+.v18-deploy-bracket-labels .lo { position: absolute; left: 0; }
+.v18-deploy-bracket-labels .hi { position: absolute; right: 0; }
+.v18-deploy-bracket-labels .pick {
+  position: absolute;
+  transform: translateX(-50%);
+  color: #3fb950;
+  font-weight: 600;
+}
+.v18-deploy-stake {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 600;
+  color: var(--text);
+  text-align: right;
+}
+.v18-deploy-rule {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: right;
+}
+
+/* v18 — regime band overlays on the per-account detail price chart.
+   These are rendered as a sequence of horizontal background bars by
+   addAreaSeries (transparent fills) so the colored band shows behind
+   the price candles. */
+.v18-regime-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.v18-regime-pill.conservative { background: rgba(63,185,80,0.12); color: #3fb950; }
+.v18-regime-pill.moderate     { background: rgba(210,153,34,0.12); color: #d29922; }
+.v18-regime-pill.aggressive   { background: rgba(248,81,73,0.12);  color: #f85149; }
+
+.v18-detail-section {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(88,166,255,0.04);
+  border: 1px solid rgba(88,166,255,0.12);
+  border-radius: 6px;
+}
+.v18-detail-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #58a6ff;
+}
+.v18-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 16px;
+  font-size: 12px;
+}
+.v18-detail-grid .lbl {
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.v18-detail-grid .val {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 2px;
+}
+
+/* Compare-mode paired-seed banner. */
+.v18-paired-banner {
+  background: rgba(63,185,80,0.06);
+  border: 1px solid rgba(63,185,80,0.2);
+  border-radius: var(--r-md);
+  padding: var(--s-3) var(--s-4);
+  margin-bottom: var(--s-3);
+  font-size: 12px;
+}
+.v18-paired-banner.lose {
+  background: rgba(248,81,73,0.06);
+  border-color: rgba(248,81,73,0.2);
+}
+.v18-paired-banner .verdict {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .chart-header {
   display: flex;
   justify-content: space-between;

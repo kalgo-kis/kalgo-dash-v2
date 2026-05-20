@@ -343,6 +343,11 @@ function renderBundle(b) {
   renderComplianceTablePanel(b);
   loadExperimentNotes(b);
 
+  // v18 (bundle_version >= 4): fleet-level stake bracket panel.
+  populateV18DeploysPanel(b);
+  // v18 regime chart resets to placeholder until an account is selected.
+  clearV18RegimeChart();
+
   // reset detail panel
   document.getElementById("detail-body").innerHTML = `<div class="placeholder">Click a deploy marker on the chart or a table row to inspect an account. ${accounts.length} accounts loaded.</div>`;
   document.getElementById("close-detail-btn").style.display = "none";
@@ -3549,6 +3554,10 @@ function showAccountDetail(a) {
       </div>`;
   }
 
+  // v18 detail block — RFleetDecision + regime + pacing diagnostic.
+  // Renders nothing for v3 bundles (a.v18 undefined).
+  const v18HTML = buildV18DetailHTML(a);
+
   document.getElementById("close-detail-btn").style.display = "";
   document.getElementById("detail-body").innerHTML = `
     <div class="detail-header">
@@ -3565,6 +3574,7 @@ function showAccountDetail(a) {
     </div>
     ${basketHTML}
     ${adaptiveHTML}
+    ${v18HTML}
     <div class="detail-actions">
       <button id="zoom-to-acct-btn">Zoom to account lifetime</button>
       ${a.trace ? '<button id="hide-trades-btn">Hide trades</button>' : '<span class="muted" style="font-size:11px;">No trace data (run with --trace)</span>'}
@@ -3573,6 +3583,10 @@ function showAccountDetail(a) {
       <button id="prev-acct-btn">&larr; Prev account</button>
     </div>
   `;
+
+  // v18 R_account + regime chart: populate when this account has v18
+  // regime_timeline data. Hides itself otherwise (legacy bundles).
+  populateV18RegimeChart(a, state.currentBundle);
 
   document.getElementById("zoom-to-acct-btn").onclick = () => zoomToAccount(a);
   // Auto-show trades: switch to M1 candles for this account's range, then overlay
@@ -3783,6 +3797,7 @@ function resetZoom() {
 function closeDetail() {
   if (!state.currentBundle) return;
   clearTraceOverlay();
+  clearV18RegimeChart();
   switchToM15();  // Restore M15 candles
   document.getElementById("detail-body").innerHTML =
     `<div class="placeholder">Click a deploy marker on the chart or a table row to inspect an account. ${state.currentBundle.accounts.length} accounts loaded.</div>`;
@@ -3979,6 +3994,9 @@ function renderComparison() {
         return `<div class="cg-label">${label}</div><div class="cg-val ${clsA}">${fmtNum(va, 4)}</div><div class="cg-val ${clsB}">${fmtNum(vb, 4)}</div>`;
       }).join("")}
     </div>`;
+
+  // v18 paired-seed banner — Phase 5b smoke variant; full sign-test in 5c.
+  renderV18PairedBanner();
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -4534,6 +4552,367 @@ async function onUpdateDashboardClick() {
   window.location.href = window.location.pathname + "?_t=" + Date.now();
 }
 
+// ===========================================================================
+// v18 — post-audit architecture surfaces (bundle_version >= 4)
+//
+// Adds four panels keyed off bundle.v18 / accounts[i].v18:
+//   1. R_fleet stake bracket panel (bundle-level, under bank chart)
+//   2. R_account + regime chart (per-account, under risk-chart-section)
+//   3. RFleetDecision + pacing block (account detail panel)
+//   4. Compare-mode paired-seed banner (V18RegimePolicy vs V18PolicyFNone)
+//
+// All functions render-gate on data presence — bundles without v18 fields
+// behave exactly as before. Coexists with the T2 risk-chart-section; both
+// can render simultaneously on a hybrid bundle.
+// ===========================================================================
+
+function isV18Bundle(b) {
+  return !!(b && (b.bundle_version >= 4 || (b.v18 && b.v18.policy_class)));
+}
+
+function regimeClass(regime) {
+  return regime ? String(regime).toLowerCase() : "";
+}
+
+function fmtRegime(regime) {
+  if (!regime) return "—";
+  const cls = regimeClass(regime);
+  return `<span class="v18-regime-pill ${cls}">${cls}</span>`;
+}
+
+// ── R_fleet stake bracket panel ──────────────────────────────────────────
+function populateV18DeploysPanel(b) {
+  const section = document.getElementById("v18-deploys-section");
+  if (!section) return;
+  const body = document.getElementById("v18-deploys-body");
+  const legend = document.getElementById("v18-deploys-legend");
+
+  // Hide for non-v18 bundles. Bundle-level v18 block carries fleet
+  // defaults; per-account v18 blocks carry the per-deploy decision.
+  if (!isV18Bundle(b)) {
+    section.style.display = "none";
+    body.innerHTML = "";
+    return;
+  }
+
+  const deploysWithV18 = (b.accounts || []).filter(a => a.v18 && a.v18.r_fleet_decision);
+  if (deploysWithV18.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+
+  // Legend: pool capital + fleet target + active rules.
+  const v18 = b.v18 || {};
+  const rf = v18.r_fleet || {};
+  const rules = [
+    `pool $${(rf.pool_capital_init || 0).toLocaleString()}`,
+    `target ${((rf.target_return || 0) * 100).toFixed(0)}% / yr`,
+    `${rf.stake_picking_rule || "—"} · ${rf.active_count_rule || "—"} · ${rf.target_allocation_rule || "—"}`,
+  ].join(" · ");
+  legend.textContent = rules;
+
+  // Find the global stake range across all deploys so each row scales
+  // to the same axis — easier to compare across deploys visually.
+  let globalLo = Infinity, globalHi = -Infinity;
+  for (const a of deploysWithV18) {
+    const d = a.v18.r_fleet_decision;
+    if (d.floor < globalLo) globalLo = d.floor;
+    if (d.ceiling > globalHi) globalHi = d.ceiling;
+  }
+  // Pad ranges so the ceiling marker isn't pinned to the right edge.
+  const padded = globalHi - globalLo;
+  const lo = Math.max(0, globalLo - padded * 0.05);
+  const hi = globalHi + padded * 0.05;
+  const span = Math.max(hi - lo, 1);
+
+  const rows = [];
+  rows.push(`
+    <div class="v18-deploy-row cell-headers">
+      <div>Deploy time</div>
+      <div>Account</div>
+      <div>Stake bracket (floor → ceiling)</div>
+      <div>Picked stake</div>
+      <div>Picking rule</div>
+    </div>
+  `);
+  for (const a of deploysWithV18) {
+    const d = a.v18.r_fleet_decision;
+    const deployT = toUnix(a.deploy_time);
+    const pctLo = ((d.floor - lo) / span) * 100;
+    const pctHi = ((d.ceiling - lo) / span) * 100;
+    const pctPick = ((d.stake - lo) / span) * 100;
+    rows.push(`
+      <div class="v18-deploy-row">
+        <div class="v18-deploy-time">${fmtUnix(deployT)}</div>
+        <div class="v18-deploy-acct">#${a.num}</div>
+        <div class="v18-deploy-bracket">
+          <div class="v18-deploy-bracket-track"></div>
+          <div class="v18-deploy-bracket-range"
+               style="left:${pctLo.toFixed(2)}%; width:${(pctHi - pctLo).toFixed(2)}%;"></div>
+          <div class="v18-deploy-bracket-pick"
+               style="left:${pctPick.toFixed(2)}%;"
+               title="picked $${d.stake.toFixed(0)} (year ${d.deploy_year})"></div>
+          <div class="v18-deploy-bracket-labels">
+            <span class="lo">$${Math.round(d.floor)}</span>
+            <span class="pick" style="left:${pctPick.toFixed(2)}%;">$${Math.round(d.stake)}</span>
+            <span class="hi">$${Math.round(d.ceiling)}</span>
+          </div>
+        </div>
+        <div class="v18-deploy-stake">$${d.stake.toFixed(0)}</div>
+        <div class="v18-deploy-rule">${d.stake_picking_rule}</div>
+      </div>
+    `);
+  }
+  body.innerHTML = rows.join("");
+}
+
+// ── R_account + regime chart (per-account) ───────────────────────────────
+function ensureV18RegimeChart() {
+  const el = document.getElementById("v18-regime-chart");
+  if (!el) return null;
+  if (state.v18RegimeChart) return state.v18RegimeChart;
+  state.v18RegimeChart = LightweightCharts.createChart(el, {
+    ...commonChartOpts(el.clientHeight || 320),
+    width: el.clientWidth,
+  });
+  // Resize observer so the chart tracks the section's clientWidth.
+  const ro = new ResizeObserver(() => {
+    if (state.v18RegimeChart && el) {
+      try { state.v18RegimeChart.resize(el.clientWidth, el.clientHeight); }
+      catch {}
+    }
+  });
+  ro.observe(el);
+  return state.v18RegimeChart;
+}
+
+function clearV18RegimeChart() {
+  const section = document.getElementById("v18-regime-chart-section");
+  if (section) section.style.display = "none";
+  const title = document.getElementById("v18-regime-chart-title");
+  if (title) title.textContent = "R_account & Regime · select an account";
+  for (const k of ["v18RSeries", "v18TargetDiagSeries", "v18ConsLineSeries", "v18AggLineSeries"]) {
+    if (state[k]) {
+      try { state.v18RegimeChart && state.v18RegimeChart.removeSeries(state[k]); } catch {}
+      state[k] = null;
+    }
+  }
+}
+
+function populateV18RegimeChart(account, bundle) {
+  if (!isV18Bundle(bundle)) {
+    clearV18RegimeChart();
+    return;
+  }
+  const v18 = account && account.v18;
+  const timeline = v18 && v18.regime_timeline;
+  if (!timeline || timeline.length === 0) {
+    clearV18RegimeChart();
+    return;
+  }
+  ensureV18RegimeChart();
+  // Tear down previous series before re-populating.
+  for (const k of ["v18RSeries", "v18TargetDiagSeries", "v18ConsLineSeries", "v18AggLineSeries"]) {
+    if (state[k]) {
+      try { state.v18RegimeChart.removeSeries(state[k]); } catch {}
+      state[k] = null;
+    }
+  }
+
+  const section = document.getElementById("v18-regime-chart-section");
+  if (section) section.style.display = "";
+  const title = document.getElementById("v18-regime-chart-title");
+  if (title) {
+    const finalReg = v18.final_regime || timeline[timeline.length - 1].regime;
+    title.innerHTML = `R_account · Account #${account.num} · final regime ${fmtRegime(finalReg)}`;
+  }
+
+  // R_account line (dense per-basket-close samples).
+  state.v18RSeries = state.v18RegimeChart.addLineSeries({
+    color: COLORS.green, lineWidth: 2, title: "R_account",
+    priceFormat: { type: "price", precision: 3, minMove: 0.001 },
+  });
+  const sortedTimeline = [...timeline].sort((a, b) => a.time_unix - b.time_unix);
+  const seenTimes = new Set();
+  const rPoints = [];
+  for (const e of sortedTimeline) {
+    if (seenTimes.has(e.time_unix)) continue;
+    seenTimes.add(e.time_unix);
+    rPoints.push({ time: e.time_unix, value: e.R });
+  }
+  state.v18RSeries.setData(rPoints);
+
+  // R band thresholds (semantic regime boundaries).
+  state.v18ConsLineSeries = state.v18RegimeChart.addLineSeries({
+    color: "#d29922", lineWidth: 1, lineStyle: 2,
+    title: "R = 0.5", crosshairMarkerVisible: false,
+    lastValueVisible: false, priceLineVisible: false,
+  });
+  state.v18AggLineSeries = state.v18RegimeChart.addLineSeries({
+    color: "#f85149", lineWidth: 1, lineStyle: 2,
+    title: "R = 1.0", crosshairMarkerVisible: false,
+    lastValueVisible: false, priceLineVisible: false,
+  });
+  if (rPoints.length > 0) {
+    const t0 = rPoints[0].time;
+    const t1 = rPoints[rPoints.length - 1].time;
+    state.v18ConsLineSeries.setData([
+      { time: t0, value: 0.5 }, { time: t1, value: 0.5 },
+    ]);
+    state.v18AggLineSeries.setData([
+      { time: t0, value: 1.0 }, { time: t1, value: 1.0 },
+    ]);
+  }
+
+  // Target × t diagonal — the pacing reference. account_target_per_year
+  // × elapsed years. Compares actual R growth to "on pace for fleet target".
+  const decision = v18.r_fleet_decision;
+  const accountTarget = decision ? decision.account_target_per_year : null;
+  if (accountTarget && rPoints.length > 0) {
+    const deployT = rPoints[0].time;
+    const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+    const diagPoints = rPoints.map(p => {
+      const years = (p.time - deployT) / SECONDS_PER_YEAR;
+      return { time: p.time, value: accountTarget * years };
+    });
+    state.v18TargetDiagSeries = state.v18RegimeChart.addLineSeries({
+      color: COLORS.blue, lineWidth: 1, lineStyle: 1,
+      title: `target × t (${(accountTarget * 100).toFixed(0)}%/yr)`,
+      crosshairMarkerVisible: false,
+    });
+    state.v18TargetDiagSeries.setData(diagPoints);
+  }
+
+  // Transition markers on the chart at each regime change.
+  const markers = [];
+  for (const e of sortedTimeline) {
+    if (!e.transition) continue;
+    const cls = regimeClass(e.regime);
+    const color = cls === "conservative" ? "#3fb950"
+                : cls === "moderate" ? "#d29922"
+                : cls === "aggressive" ? "#f85149"
+                : COLORS.gray;
+    markers.push({
+      time: e.time_unix,
+      position: "inBar",
+      color, shape: "circle",
+      text: `→ ${cls}`,
+    });
+  }
+  state.v18RSeries.setMarkers(markers);
+  state.v18RegimeChart.timeScale().fitContent();
+}
+
+// ── Account-detail v18 section (HTML fragment) ───────────────────────────
+function buildV18DetailHTML(a) {
+  const v18 = a && a.v18;
+  if (!v18) return "";
+  const d = v18.r_fleet_decision;
+  const finalReg = v18.final_regime;
+  const timeline = v18.regime_timeline || [];
+  const transitions = timeline.filter(e => e.transition);
+  const transitionsHTML = transitions.length === 0
+    ? '<span class="muted">no regime change</span>'
+    : transitions.slice(1).map(e => fmtRegime(e.regime)).join(' → ');
+
+  if (!d) {
+    // Edge case: timeline but no decision (e.g., deploy preceded v18
+    // policy attachment). Still surface what we have.
+    return `
+      <div class="v18-detail-section">
+        <h4>v18 regime path</h4>
+        <div class="v18-detail-grid">
+          <div><div class="lbl">Final regime</div><div class="val">${fmtRegime(finalReg)}</div></div>
+          <div><div class="lbl">Transitions</div><div class="val">${transitionsHTML}</div></div>
+          <div><div class="lbl">Basket-close samples</div><div class="val">${timeline.length}</div></div>
+        </div>
+      </div>`;
+  }
+
+  // Pacing diagnostic — actual `withdrawn/stake` (R at last sample) vs
+  // `account_target × t_years`. If actual outpaces the diagonal the
+  // account is "ahead of pace"; behind = "off pace".
+  const finalSample = timeline[timeline.length - 1];
+  const finalR = finalSample ? finalSample.R : 0;
+  const deployT = timeline[0] ? timeline[0].time_unix : null;
+  const finalT = finalSample ? finalSample.time_unix : null;
+  const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+  const yearsElapsed = (deployT && finalT) ? (finalT - deployT) / SECONDS_PER_YEAR : 0;
+  const targetAtT = d.account_target_per_year * yearsElapsed;
+  const paceDelta = finalR - targetAtT;
+  const paceClass = paceDelta >= 0 ? "green" : "red";
+  const paceLabel = paceDelta >= 0 ? "ahead of pace" : "off pace";
+
+  return `
+    <div class="v18-detail-section">
+      <h4>R_fleet decision</h4>
+      <div class="v18-detail-grid">
+        <div><div class="lbl">Stake (picked)</div><div class="val">$${d.stake.toFixed(0)}</div></div>
+        <div><div class="lbl">Bracket floor</div><div class="val">$${d.floor.toFixed(0)}</div></div>
+        <div><div class="lbl">Bracket ceiling</div><div class="val">$${d.ceiling.toFixed(0)}</div></div>
+        <div><div class="lbl">Picking rule</div><div class="val">${d.stake_picking_rule}</div></div>
+        <div><div class="lbl">Active-count rule</div><div class="val">${d.active_count_rule}</div></div>
+        <div><div class="lbl">Target alloc rule</div><div class="val">${d.target_allocation_rule}</div></div>
+        <div><div class="lbl">Account target / yr</div><div class="val">${(d.account_target_per_year * 100).toFixed(1)}%</div></div>
+        <div><div class="lbl">n_active target</div><div class="val">${d.n_active_target}</div></div>
+        <div><div class="lbl">Deploy year</div><div class="val">${d.deploy_year}</div></div>
+      </div>
+    </div>
+    <div class="v18-detail-section">
+      <h4>Regime + pacing</h4>
+      <div class="v18-detail-grid">
+        <div><div class="lbl">Final regime</div><div class="val">${fmtRegime(finalReg)}</div></div>
+        <div><div class="lbl">Regime transitions</div><div class="val">${transitionsHTML}</div></div>
+        <div><div class="lbl">Years elapsed</div><div class="val">${yearsElapsed.toFixed(2)}y</div></div>
+        <div><div class="lbl">Actual R</div><div class="val">${finalR.toFixed(3)}</div></div>
+        <div><div class="lbl">Target × t</div><div class="val">${targetAtT.toFixed(3)}</div></div>
+        <div><div class="lbl">Pace</div><div class="val" style="color:var(--${paceClass});">${paceDelta >= 0 ? "+" : ""}${paceDelta.toFixed(3)} (${paceLabel})</div></div>
+      </div>
+    </div>`;
+}
+
+// ── Compare-mode paired-seed banner ──────────────────────────────────────
+function renderV18PairedBanner() {
+  // Removes any prior banner. Inserted at the top of #comparison-body
+  // (already shown by renderComparison). Render-gates on both bundles
+  // being available + at least one being v18.
+  const body = document.getElementById("comparison-body");
+  if (!body) return;
+  const prior = body.querySelector(".v18-paired-banner");
+  if (prior) prior.remove();
+  const cur = state.currentBundle;
+  const cmp = state.compareBundle;
+  if (!cur || !cmp) return;
+  if (!isV18Bundle(cur) && !isV18Bundle(cmp)) return;
+
+  const curTR = (cur.metrics && cur.metrics.total_return) || 0;
+  const cmpTR = (cmp.metrics && cmp.metrics.total_return) || 0;
+  const delta = curTR - cmpTR;
+  const winner = delta > 0 ? cur : cmp;
+  const loser = delta > 0 ? cmp : cur;
+  const verdict = delta === 0 ? "TIE"
+    : (isV18Bundle(winner) && !isV18Bundle(loser)) ? "V18 WINS"
+    : (!isV18Bundle(winner) && isV18Bundle(loser)) ? "F_NONE WINS"
+    : (winner.policy_name || winner.experiment_id) + " WINS";
+  const cls = delta === 0 ? "" : (verdict === "V18 WINS" ? "" : "lose");
+  const banner = document.createElement("div");
+  banner.className = "v18-paired-banner" + (cls ? " " + cls : "");
+  banner.innerHTML = `
+    <div><span class="verdict">${verdict}</span> on fold ${cur.fold || "—"}</div>
+    <div style="margin-top:6px;color:var(--text-muted);font-family:'IBM Plex Mono',monospace;">
+      ${cur.policy_name || cur.experiment_id}: ${curTR.toFixed(4)}x
+      &nbsp;vs&nbsp;
+      ${cmp.policy_name || cmp.experiment_id}: ${cmpTR.toFixed(4)}x
+      &nbsp;·&nbsp;Δ = ${delta >= 0 ? "+" : ""}${delta.toFixed(4)}x
+    </div>
+    <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
+      Single-seed smoke (Phase 5b). Paired-seed sign test (≥ 8 of 10 per fold) ships in Phase 5c.
+    </div>
+  `;
+  body.prepend(banner);
+}
+
 // ----- events -----
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("fold-filter").addEventListener("change", refreshSelector);
@@ -4581,6 +4960,33 @@ document.addEventListener("DOMContentLoaded", () => {
     loadManifest().catch(err => {
       setStatus("error: " + err.message);
       console.error(err);
+    }).then(() => {
+      // Headless-screenshot helper for automated visual verification.
+      // URL hashes:
+      //   #auto_account_<N> — select the Nth account row after load
+      //   #auto_compare_<experiment_id> — toggle compare mode + load partner
+      // Inert under normal navigation.
+      const hash = location.hash || "";
+      const acctMatch = hash.match(/#auto_account_(\d+)/);
+      const cmpMatch = hash.match(/#auto_compare_([\w\-]+)/);
+      if (acctMatch) {
+        setTimeout(() => {
+          const accts = state.currentBundle && state.currentBundle.accounts;
+          if (!accts || accts.length === 0) return;
+          const idx = Math.min(parseInt(acctMatch[1], 10), accts.length - 1);
+          try { showAccountDetail(accts[idx]); } catch (e) { console.error(e); }
+        }, 1500);
+      }
+      if (cmpMatch) {
+        setTimeout(() => {
+          const cb = document.getElementById("compare-mode");
+          if (cb && !cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change")); }
+          // Find partner entry in the manifest by experiment_id.
+          const partner = state.manifest && state.manifest.experiments &&
+            state.manifest.experiments.find(e => e.experiment_id === cmpMatch[1]);
+          if (partner) loadCompareExperiment(partner);
+        }, 1800);
+      }
     });
   });
 });
