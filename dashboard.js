@@ -4769,18 +4769,46 @@ function populateV18RegimeChart(account, bundle) {
     title.innerHTML = `R_account · Account #${account.num} · final regime ${fmtRegime(finalReg)}`;
   }
 
-  // R_account line (dense per-basket-close samples).
+  // R_account line. R only updates at basket close (TP) so the underlying
+  // semantic IS a step function. We densify with M15-aligned samples
+  // (held flat between actual basket-close updates) for two reasons:
+  //   1. Visual correctness — between basket closes, R doesn't drift,
+  //      it holds constant. The dense + step rendering shows that.
+  //   2. Crosshair alignment — LWC builds the chart's time axis from
+  //      data points and interpolates X-coordinates between them. With
+  //      sparse data (398 points for a 99-day account vs the price
+  //      chart's ~9500 M15 candles in the same window) the crosshair
+  //      time-to-pixel mapping is coarse, so mirrored crosshairs from
+  //      other dense charts land at slightly-off pixel positions.
+  //      Densifying to the same M15 cadence as the price chart aligns
+  //      both charts' time axes.
   state.v18RSeries = state.v18RegimeChart.addLineSeries({
     color: COLORS.green, lineWidth: 2, title: "R_account",
     priceFormat: { type: "price", precision: 3, minMove: 0.001 },
+    lineType: 1,  // WithSteps — visually matches the step-function semantic
   });
   const sortedTimeline = [...timeline].sort((a, b) => a.time_unix - b.time_unix);
-  const seenTimes = new Set();
+  const t0 = sortedTimeline[0].time_unix;
+  const tEnd = sortedTimeline[sortedTimeline.length - 1].time_unix;
+  // Build a dense time set: union of basket-close times and the bundle's
+  // M15 candle times that fall inside the account's lifetime.
+  const candleTimes = (bundle.candles_m15 || [])
+    .map(c => c.t)
+    .filter(t => t >= t0 && t <= tEnd);
+  const mergedTimes = new Set(candleTimes);
+  for (const e of sortedTimeline) mergedTimes.add(e.time_unix);
+  const sortedTimes = [...mergedTimes].sort((a, b) => a - b);
+  // Walk forward, carrying the current R from the most recent basket-close
+  // sample. Result is a step-shaped, M15-dense R series.
   const rPoints = [];
-  for (const e of sortedTimeline) {
-    if (seenTimes.has(e.time_unix)) continue;
-    seenTimes.add(e.time_unix);
-    rPoints.push({ time: e.time_unix, value: e.R });
+  let cursor = 0;
+  let currentR = sortedTimeline[0].R;
+  for (const t of sortedTimes) {
+    while (cursor < sortedTimeline.length && sortedTimeline[cursor].time_unix <= t) {
+      currentR = sortedTimeline[cursor].R;
+      cursor++;
+    }
+    rPoints.push({ time: t, value: currentR });
   }
   state.v18RSeries.setData(rPoints);
 
