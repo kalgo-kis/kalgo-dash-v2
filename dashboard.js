@@ -2103,13 +2103,29 @@ function formatTradeTooltip(tick) {
     const idLine = m.basketId
       ? `<div style="color:${COLORS.cyan};font-family:var(--font-mono),monospace;font-size:10px;margin-bottom:2px">${m.basketId}</div>`
       : "";
+    // When the basket had partial-stop-out exits during its life, split
+    // the breakdown so the reader sees both the TP leg and the loss
+    // realized when the broker pulled the worst positions to keep the
+    // account alive. m.pnl is the basket's TRUE economic result.
+    let breakdown = "";
+    if (m.stopout_count > 0) {
+      const tpPnl = m.tp_close_pnl || 0;
+      const soPnl = m.stopout_pnl || 0;
+      const tpSign = tpPnl >= 0 ? "+" : "";
+      const soSign = soPnl >= 0 ? "+" : "";
+      breakdown =
+        `<div style="color:${COLORS.textMuted};margin-top:2px;font-size:10px">` +
+          `TP leg <span style="color:${COLORS.green}">${tpSign}$${tpPnl.toFixed(2)}</span> · ` +
+          `stop-out leg (${m.stopout_count}) <span style="color:${COLORS.red}">${soSign}$${soPnl.toFixed(2)}</span></div>`;
+    }
     return (
       idLine +
       `<div style="color:${COLORS.text};font-weight:600">` +
         `${m.side} basket close · ${m.reason || "—"}</div>` +
       `<div style="color:${COLORS.textMuted};margin-top:2px">` +
         `price ${fmtPrice(m.price)} · ${m.positions} positions · ` +
-        `<span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span></div>`
+        `<span style="color:${pnlColor}">${pnlSign}$${(m.pnl || 0).toFixed(2)}</span></div>` +
+      breakdown
     );
   }
   if (m.kind === "adaptive_entry") {
@@ -2304,6 +2320,15 @@ function showTraceOverlay(a) {
           tier,
           tag: e.tag || "",
           time_unix: e.time_unix,
+          // 2026-05-24: carry exit info so basket-close markers can
+          // aggregate the basket's TRUE economic P&L (TP close pnl +
+          // any per-entry stopouts that fired during the basket's
+          // life). Without these, the close marker reads only the
+          // basket close event's pnl and misses partial-margin-call
+          // stopouts — making a net-loss basket look like a winner.
+          pnl_net: e.pnl_net,
+          exit_reason: e.exit_reason,
+          exit_time_unix: e.exit_time_unix,
         },
       };
       allTicks.push(tick);
@@ -2325,6 +2350,29 @@ function showTraceOverlay(a) {
           if (m) basketId = m[1];
         }
         const closeColor = side === "buy" ? COLORS.blue : COLORS.purple;
+        // 2026-05-24: aggregate the basket's TRUE P&L across ALL of its
+        // entries' realized pnl_net values. The basket close event's
+        // `pnl` is only the TP-leg pnl on positions still in the basket
+        // at close time — it misses any positions liquidated earlier by
+        // a partial margin call (broker pulled the worst N positions
+        // to keep the account alive). When that happens the basket can
+        // visually look like a winning TP while economically being a
+        // net loss. Summing entry.pnl_net for every entry that was part
+        // of this basket cycle restores the true result.
+        let truePnl = 0;
+        let nStopout = 0;
+        let stopoutPnl = 0;
+        let allClosed = true;
+        for (const entry of pending) {
+          const ePnl = entry.meta?.pnl_net;
+          if (ePnl == null) { allClosed = false; continue; }
+          truePnl += ePnl;
+          if (entry.meta?.exit_reason === "stopout") {
+            nStopout += 1;
+            stopoutPnl += ePnl;
+          }
+        }
+        const closePnlForMarker = allClosed ? truePnl : c.pnl;
         allTicks.push({
           t: closeT,
           v: cp,
@@ -2334,7 +2382,14 @@ function showTraceOverlay(a) {
             basketId,
             side: side.toUpperCase(),
             price: cp,
-            pnl: c.pnl,
+            // `pnl` is the BASKET's TRUE economic result for hover/tooltip.
+            pnl: closePnlForMarker,
+            // Keep the original TP-leg pnl available under a dedicated
+            // field for diagnostics — useful for "this basket TP'd for
+            // +$X but lost $Y to a partial stop-out beforehand" tooltips.
+            tp_close_pnl: c.pnl,
+            stopout_count: nStopout,
+            stopout_pnl: stopoutPnl,
             positions: c.positions,
             reason: c.reason,
             time_unix: ev.time,
@@ -3449,20 +3504,55 @@ function showBasketBreakEvenLine(basket) {
   // Stair-step: WAPP holds constant from each entry until the next one,
   // then jumps. Lightweight Charts lineType=1 gives WithSteps rendering
   // (horizontal segments with vertical jumps at each data point).
+  //
+  // 2026-05-24: WAPP also steps when an entry EXITS via stopout during
+  // the basket's life. A partial margin call pulls the basket's worst
+  // positions (the most-adverse entries) and the basket's WAPP shifts
+  // in the favorable direction. Previously the line only stepped on
+  // entries, leaving the post-stop-out WAPP appearing unchanged on the
+  // chart even though the basket's true break-even had moved closer.
+  //
+  // We build an event stream merging entries (add to totals at entry
+  // time) and stopout exits (remove from totals at exit time, but only
+  // when the exit time is BEFORE the basket close — exits AT the close
+  // are basket-wide TPs already represented by the close marker, not
+  // partial liquidations).
+  const closeT_raw = basket.close_event?.time || Infinity;
+  const events = [];
+  for (const e of entries) {
+    const lots = e.lots || 0;
+    if (lots <= 0) continue;
+    events.push({ t: e.time_unix, kind: "add", price: e.price, lots });
+    if (e.exit_reason === "stopout"
+        && e.exit_time_unix
+        && e.exit_time_unix < closeT_raw) {
+      events.push({ t: e.exit_time_unix, kind: "remove", price: e.price, lots });
+    }
+  }
+  // Sort: time ascending; on equal time, adds before removes so a stop-out
+  // recorded at the same minute as a new entry still shows the correct
+  // intermediate state.
+  events.sort((a, b) => (a.t - b.t) || (a.kind === "add" ? -1 : 1));
+
   let totalLots = 0;
   let weightedSum = 0;
   const seenTimes = new Set();
   const points = [];
-  for (const e of entries) {
-    const lots = e.lots || 0;
-    if (lots <= 0) continue;
-    totalLots  += lots;
-    weightedSum += (e.price || 0) * lots;
-    const wapp = totalLots > 0 ? weightedSum / totalLots : 0;
-    let t = snapTo(e.time_unix);
-    // Guarantee strict monotonic time — Lightweight Charts requires it.
+  for (const ev of events) {
+    if (ev.kind === "add") {
+      totalLots   += ev.lots;
+      weightedSum += ev.price * ev.lots;
+    } else {
+      totalLots   -= ev.lots;
+      weightedSum -= ev.price * ev.lots;
+      // Defensive clamp for floating-point underflow when removing the
+      // last position.
+      if (Math.abs(totalLots) < 1e-9) { totalLots = 0; weightedSum = 0; }
+    }
+    if (totalLots <= 0) continue;
+    const wapp = weightedSum / totalLots;
+    let t = snapTo(ev.t);
     while (seenTimes.has(t)) {
-      // Bump to the next candle if we collided with one already used
       const idx = candleTimes.indexOf(t);
       if (idx < 0 || idx >= candleTimes.length - 1) break;
       t = candleTimes[idx + 1];
