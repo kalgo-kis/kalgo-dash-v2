@@ -2007,9 +2007,14 @@ function installTraceHoverTooltip(chartEl) {
     }
 
     const ts = state.priceChart.timeScale();
-    let nearest = null;
-    let nearestDist = TRACE_HOVER_RADIUS_PX;
+    // Collect every tick within the hover radius (not just the nearest)
+    // so co-located events (e.g., a BUY entry and a SELL entry that
+    // both land at the same global grid level price) all surface in
+    // the tooltip. Without this, the closer tick wins and the other
+    // is invisible at hover.
+    const matched = [];
     for (const tk of ticks) {
+      if (!tk.meta) continue;
       const tx = ts.timeToCoordinate(tk.t);
       if (tx === null) continue;
       const ty = state.candleSeries.priceToCoordinate(tk.v);
@@ -2017,14 +2022,20 @@ function installTraceHoverTooltip(chartEl) {
       const sx = tx + offsetX;
       const sy = ty + offsetY;
       const d = Math.max(Math.abs(sx - mx), Math.abs(sy - my));
-      if (d <= nearestDist) { nearestDist = d; nearest = tk; }
+      if (d <= TRACE_HOVER_RADIUS_PX) {
+        matched.push({ tk, d });
+      }
     }
 
-    if (!nearest || !nearest.meta) {
+    if (matched.length === 0) {
       tip.style.display = "none";
       return;
     }
-    tip.innerHTML = formatTradeTooltip(nearest);
+    // Closest tick first so the user reads the most-likely-intended
+    // event at the top; subsequent ticks are separated by a thin rule.
+    matched.sort((a, b) => a.d - b.d);
+    const DIVIDER = '<div style="height:1px;background:#30363d;margin:6px -8px"></div>';
+    tip.innerHTML = matched.map(({ tk }) => formatTradeTooltip(tk)).join(DIVIDER);
     tip.style.display = "block";
     // Position above and slightly right of the cursor; flip if near edges
     const tipW = tip.offsetWidth || 160;
