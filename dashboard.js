@@ -1377,10 +1377,33 @@ function setupCharts() {
   // would diverge. Time aligns both regardless of sampling rate.
   // The _syncing flag breaks the feedback loop.
   state._syncing = false;
+  state._syncReleaseId = null;
+
+  // Time-range sync robustly: when a user-driven zoom/pan fires on chart A,
+  // mirror to charts B/C/D — but suppress feedback from charts that don't
+  // span the source range. LWC's setVisibleRange will sometimes CLAMP the
+  // call when the destination chart's data is narrower than the request
+  // (e.g., per-account regime/risk data covering only one account's life,
+  // while the price chart spans the whole fold). The clamped chart then
+  // re-emits the narrower range — and without a deadline-based guard that
+  // outlives our synchronous mirrorRange call, the clamp ricochets back
+  // and collapses every chart to the narrow extent (the "snap to rightmost
+  // bound" symptom). Releasing the flag on the next two animation frames
+  // absorbs the LWC settling tick that fires after our synchronous calls.
+  function setSyncFlag() {
+    state._syncing = true;
+    if (state._syncReleaseId) cancelAnimationFrame(state._syncReleaseId);
+    state._syncReleaseId = requestAnimationFrame(() => {
+      state._syncReleaseId = requestAnimationFrame(() => {
+        state._syncing = false;
+        state._syncReleaseId = null;
+      });
+    });
+  }
 
   // Mirror time-range r to every chart EXCEPT the emitting one. Each chart
-  // is gated on having actual data (`has*Series`) so the call doesn't throw
-  // on an empty chart. Used by all four subscriptions below.
+  // is gated on having actual data so the call doesn't throw on an empty
+  // chart. Used by all four subscriptions below.
   function mirrorRange(r, except) {
     if (state.priceChart && state.candleSeries && except !== state.priceChart) {
       try { state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); } catch {}
@@ -1403,73 +1426,74 @@ function setupCharts() {
     if (!r) return;
     applyMarkersForVisibleRange(r);
     if (state._syncing) return;
-    state._syncing = true;
+    setSyncFlag();
     mirrorRange(r, state.priceChart);
-    state._syncing = false;
   });
   state.bankChart.timeScale().subscribeVisibleTimeRangeChange(r => {
     if (!r || state._syncing) return;
-    state._syncing = true;
+    setSyncFlag();
     mirrorRange(r, state.bankChart);
-    state._syncing = false;
   });
   if (state.v18RegimeChart) {
     state.v18RegimeChart.timeScale().subscribeVisibleTimeRangeChange(r => {
       if (!r || state._syncing) return;
-      // Only emit when this chart has actual data (account-detail mode).
-      if (!state.v18RSeries) return;
-      state._syncing = true;
+      if (!state.v18RSeries) return; // Only emit when this chart has actual data
+      setSyncFlag();
       mirrorRange(r, state.v18RegimeChart);
-      state._syncing = false;
     });
   }
   if (state.riskChart) {
     state.riskChart.timeScale().subscribeVisibleTimeRangeChange(r => {
       if (!r || state._syncing) return;
       if (!state.riskBuySeries) return; // Only emit when chart actually has data
-      state._syncing = true;
+      setSyncFlag();
       mirrorRange(r, state.riskChart);
-      state._syncing = false;
     });
   }
 
-  // Crosshair sync: hovering on either chart shows the vertical line on the
-  // other so the user can read price + equity at the same instant. Uses
-  // the chart's setCrosshairPosition / clearCrosshairPosition API. The
-  // _xhairSync flag breaks the feedback loop (chart A's setCrosshair
-  // would fire chart B's subscribe, which would re-set chart A's, etc).
-  state.priceChart.subscribeCrosshairMove(param => {
-    if (state._xhairSync) return;
-    if (!param || !param.time || !state.bankChart || !state.bankSeries) {
-      try {
-        state._xhairSync = true;
-        state.bankChart?.clearCrosshairPosition();
-      } finally { state._xhairSync = false; }
-      return;
+  // Crosshair sync across all 4 charts: hovering on any chart shows the
+  // vertical line on the other 3 so the user can read price + investor
+  // P&L + R_account + Risk Gauge at the same instant. Each chart's
+  // subscribeCrosshairMove calls `mirrorCrosshair(param, exceptChart)`
+  // which fans out to the other 3 charts. The _xhairSync flag breaks
+  // the feedback loop.
+  function mirrorCrosshair(param, exceptChart) {
+    const targets = [
+      { chart: state.priceChart, series: state.candleSeries },
+      { chart: state.bankChart, series: state.bankSeries },
+      { chart: state.v18RegimeChart, series: state.v18RSeries },
+      { chart: state.riskChart, series: state.riskBuySeries },
+    ];
+    for (const { chart, series } of targets) {
+      if (!chart || chart === exceptChart) continue;
+      if (!series) {
+        // Chart exists but has no data (e.g., risk/regime in fleet view).
+        try { chart.clearCrosshairPosition(); } catch {}
+        continue;
+      }
+      if (!param || !param.time) {
+        try { chart.clearCrosshairPosition(); } catch {}
+        continue;
+      }
+      // setCrosshairPosition requires a price + series ref; the price
+      // value doesn't matter for the vertical-line position, but supplying
+      // 0 + a valid series keeps the API happy and the marker label sensible.
+      try { chart.setCrosshairPosition(0, param.time, series); } catch {}
     }
-    try {
+  }
+  function subscribeCrosshair(chart) {
+    if (!chart) return;
+    chart.subscribeCrosshairMove(param => {
+      if (state._xhairSync) return;
       state._xhairSync = true;
-      // Use a real series + valid price for the bank chart so the crosshair
-      // lands at the correct y-axis. setCrosshairPosition requires a price
-      // and series ref; price doesn't matter for the vertical line, but
-      // pulling the closest bankSeries point keeps the marker label sensible.
-      state.bankChart.setCrosshairPosition(0, param.time, state.bankSeries);
-    } finally { state._xhairSync = false; }
-  });
-  state.bankChart.subscribeCrosshairMove(param => {
-    if (state._xhairSync) return;
-    if (!param || !param.time || !state.priceChart || !state.candleSeries) {
-      try {
-        state._xhairSync = true;
-        state.priceChart?.clearCrosshairPosition();
-      } finally { state._xhairSync = false; }
-      return;
-    }
-    try {
-      state._xhairSync = true;
-      state.priceChart.setCrosshairPosition(0, param.time, state.candleSeries);
-    } finally { state._xhairSync = false; }
-  });
+      try { mirrorCrosshair(param, chart); }
+      finally { state._xhairSync = false; }
+    });
+  }
+  subscribeCrosshair(state.priceChart);
+  subscribeCrosshair(state.bankChart);
+  subscribeCrosshair(state.v18RegimeChart);
+  subscribeCrosshair(state.riskChart);
   state.priceChart.subscribeClick(param => {
     if (!param || !param.time) return;
     // Find the account whose [deploy, close] range contains the clicked time.
