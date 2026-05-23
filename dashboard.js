@@ -1214,18 +1214,28 @@ function clearCharts() {
   if (state.riskChart) {
     try { state.riskChart.remove(); } catch {}
   }
+  if (state.v18RegimeChart) {
+    try { state.v18RegimeChart.remove(); } catch {}
+  }
   const pc = document.getElementById("price-chart");
   const bc = document.getElementById("bank-chart");
   const rc = document.getElementById("risk-chart");
+  const v18 = document.getElementById("v18-regime-chart");
   if (pc) pc.innerHTML = "";
   if (bc) bc.innerHTML = "";
   if (rc) rc.innerHTML = "";
+  if (v18) v18.innerHTML = "";
   const rcSection = document.getElementById("risk-chart-section");
   if (rcSection) rcSection.style.display = "none";
+  const v18Section = document.getElementById("v18-regime-chart-section");
+  if (v18Section) v18Section.style.display = "none";
   state.priceChart = null; state.bankChart = null; state.riskChart = null;
+  state.v18RegimeChart = null;
   state.riskBuySeries = null; state.riskSellSeries = null;
   state.candleSeries = null; state.bankSeries = null;
   state.hwmSeries = null;
+  state.v18RSeries = null; state.v18TargetDiagSeries = null;
+  state.v18ConsLineSeries = null; state.v18AggLineSeries = null;
   state._basketBreakEvenSeries = null;
   state.markerIndex = {};
   state.fullPriceRange = null;
@@ -1280,6 +1290,17 @@ function setupCharts() {
       width: rcEl.clientWidth,
     });
   }
+  // v18 (Phase 5a): dedicated R_account & Regime chart, only populated in
+  // account-detail mode on v4 bundles. Created up front for the same reason
+  // as the risk chart — the time axis needs to be wired into the cross-chart
+  // sync below so zoom/pan moves all four charts together.
+  const v18El = document.getElementById("v18-regime-chart");
+  if (v18El) {
+    state.v18RegimeChart = LightweightCharts.createChart(v18El, {
+      ...commonChartOpts(v18El.clientHeight || 320),
+      width: v18El.clientWidth,
+    });
+  }
 
   state.candleSeries = state.priceChart.addCandlestickSeries({
     upColor: "#5a6a80", downColor: "#353f50",
@@ -1330,10 +1351,12 @@ function setupCharts() {
     if (state.priceChart) state.priceChart.resize(pcEl.clientWidth, pcEl.clientHeight);
     if (state.bankChart) state.bankChart.resize(bcEl.clientWidth, bcEl.clientHeight);
     if (state.riskChart && rcEl) state.riskChart.resize(rcEl.clientWidth, rcEl.clientHeight);
+    if (state.v18RegimeChart && v18El) state.v18RegimeChart.resize(v18El.clientWidth, v18El.clientHeight);
   });
   ro.observe(pcEl);
   ro.observe(bcEl);
   if (rcEl) ro.observe(rcEl);
+  if (v18El) ro.observe(v18El);
 
   // Sync bank chart to the price chart by WALL-CLOCK time (not logical index).
   // Logical sync fails because the charts have very different point counts
@@ -1354,48 +1377,58 @@ function setupCharts() {
   // would diverge. Time aligns both regardless of sampling rate.
   // The _syncing flag breaks the feedback loop.
   state._syncing = false;
+
+  // Mirror time-range r to every chart EXCEPT the emitting one. Each chart
+  // is gated on having actual data (`has*Series`) so the call doesn't throw
+  // on an empty chart. Used by all four subscriptions below.
+  function mirrorRange(r, except) {
+    if (state.priceChart && state.candleSeries && except !== state.priceChart) {
+      try { state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); } catch {}
+    }
+    if (state.bankChart && state.bankSeries && except !== state.bankChart) {
+      const data = state.bankSeries.data();
+      if (data && data.length > 0) {
+        try { state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); } catch {}
+      }
+    }
+    if (state.v18RegimeChart && state.v18RSeries && except !== state.v18RegimeChart) {
+      try { state.v18RegimeChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); } catch {}
+    }
+    if (state.riskChart && state.riskBuySeries && except !== state.riskChart) {
+      try { state.riskChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); } catch {}
+    }
+  }
+
   state.priceChart.timeScale().subscribeVisibleTimeRangeChange(r => {
     if (!r) return;
     applyMarkersForVisibleRange(r);
     if (state._syncing) return;
-    if (!state.bankChart || !state.bankSeries) return;
-    const data = state.bankSeries.data();
-    if (!data || data.length === 0) return;
     state._syncing = true;
-    try { state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
-    catch (e) { /* ignore */ }
-    // Mirror to risk chart only when it has data (account-detail mode).
-    if (state.riskChart && state.riskBuySeries) {
-      try { state.riskChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
-      catch (e) { /* ignore */ }
-    }
+    mirrorRange(r, state.priceChart);
     state._syncing = false;
   });
   state.bankChart.timeScale().subscribeVisibleTimeRangeChange(r => {
     if (!r || state._syncing) return;
-    if (!state.priceChart || !state.candleSeries) return;
     state._syncing = true;
-    try { state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
-    catch (e) { /* ignore */ }
-    if (state.riskChart && state.riskBuySeries) {
-      try { state.riskChart.timeScale().setVisibleRange({ from: r.from, to: r.to }); }
-      catch (e) { /* ignore */ }
-    }
+    mirrorRange(r, state.bankChart);
     state._syncing = false;
   });
+  if (state.v18RegimeChart) {
+    state.v18RegimeChart.timeScale().subscribeVisibleTimeRangeChange(r => {
+      if (!r || state._syncing) return;
+      // Only emit when this chart has actual data (account-detail mode).
+      if (!state.v18RSeries) return;
+      state._syncing = true;
+      mirrorRange(r, state.v18RegimeChart);
+      state._syncing = false;
+    });
+  }
   if (state.riskChart) {
     state.riskChart.timeScale().subscribeVisibleTimeRangeChange(r => {
       if (!r || state._syncing) return;
       if (!state.riskBuySeries) return; // Only emit when chart actually has data
       state._syncing = true;
-      try {
-        if (state.priceChart && state.candleSeries) {
-          state.priceChart.timeScale().setVisibleRange({ from: r.from, to: r.to });
-        }
-        if (state.bankChart && state.bankSeries) {
-          state.bankChart.timeScale().setVisibleRange({ from: r.from, to: r.to });
-        }
-      } catch (e) { /* ignore */ }
+      mirrorRange(r, state.riskChart);
       state._syncing = false;
     });
   }
@@ -4668,24 +4701,9 @@ function populateV18DeploysPanel(b) {
 }
 
 // ── R_account + regime chart (per-account) ───────────────────────────────
-function ensureV18RegimeChart() {
-  const el = document.getElementById("v18-regime-chart");
-  if (!el) return null;
-  if (state.v18RegimeChart) return state.v18RegimeChart;
-  state.v18RegimeChart = LightweightCharts.createChart(el, {
-    ...commonChartOpts(el.clientHeight || 320),
-    width: el.clientWidth,
-  });
-  // Resize observer so the chart tracks the section's clientWidth.
-  const ro = new ResizeObserver(() => {
-    if (state.v18RegimeChart && el) {
-      try { state.v18RegimeChart.resize(el.clientWidth, el.clientHeight); }
-      catch {}
-    }
-  });
-  ro.observe(el);
-  return state.v18RegimeChart;
-}
+// Chart instance lives for the bundle's lifetime (created in setupCharts);
+// populate/clear only mutate the series. Keeping the chart alive lets the
+// time-range sync subscription stay wired up across account selections.
 
 function clearV18RegimeChart() {
   const section = document.getElementById("v18-regime-chart-section");
@@ -4707,11 +4725,10 @@ function populateV18RegimeChart(account, bundle) {
   }
   const v18 = account && account.v18;
   const timeline = v18 && v18.regime_timeline;
-  if (!timeline || timeline.length === 0) {
+  if (!timeline || timeline.length === 0 || !state.v18RegimeChart) {
     clearV18RegimeChart();
     return;
   }
-  ensureV18RegimeChart();
   // Tear down previous series before re-populating.
   for (const k of ["v18RSeries", "v18TargetDiagSeries", "v18ConsLineSeries", "v18AggLineSeries"]) {
     if (state[k]) {
@@ -4801,7 +4818,17 @@ function populateV18RegimeChart(account, bundle) {
     });
   }
   state.v18RSeries.setMarkers(markers);
-  state.v18RegimeChart.timeScale().fitContent();
+  // No fitContent() here — the chart is part of the synced cluster and its
+  // range is driven by the price chart's visible time range. Calling
+  // fitContent would override the synced range and unsnap the chart.
+  // Mirror the price chart's current visible range so this newly-populated
+  // chart joins the cluster at the right zoom on its first paint.
+  if (state.priceChart && state.priceChart.timeScale) {
+    try {
+      const pr = state.priceChart.timeScale().getVisibleRange();
+      if (pr) state.v18RegimeChart.timeScale().setVisibleRange({ from: pr.from, to: pr.to });
+    } catch {}
+  }
 }
 
 // ── Account-detail v18 section (HTML fragment) ───────────────────────────
