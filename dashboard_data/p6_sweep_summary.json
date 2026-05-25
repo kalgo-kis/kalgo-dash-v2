@@ -1,0 +1,136 @@
+{
+  "sweep_id": "p6_t6_conservative_depth_widening",
+  "folds": [
+    "F1"
+  ],
+  "seeds": [
+    0,
+    15120
+  ],
+  "candidates": [
+    "C0",
+    "C2B"
+  ],
+  "acceptance_ir_floor": 0.7,
+  "sign_test_min_wins": 8,
+  "noise_sources": {
+    "spread_jitter_pips": 0.0,
+    "seed_offset_days": [
+      0,
+      7
+    ]
+  },
+  "cells": [
+    {
+      "candidate": "C0",
+      "fold": "F1",
+      "seed": 0,
+      "seed_idx": 0,
+      "offset_days": 0,
+      "total_return": 2.4814727998357236,
+      "pool_end": 12407.363999178619,
+      "total_accounts": 7,
+      "blowup_count": 6,
+      "eot_count": 1,
+      "wall_s": 148.5,
+      "bundle_path": "/Users/keihan14/kalgo-dash-v2/dashboard_data/p6_c0_F1_seed0.json",
+      "conservative_max_levels": 62,
+      "conservative_s_0": 10.0,
+      "conservative_k": 0.0,
+      "conservative_tp_floor": 1.0
+    },
+    {
+      "candidate": "C0",
+      "fold": "F1",
+      "seed": 15120,
+      "seed_idx": 1,
+      "offset_days": 7,
+      "total_return": 0.019241794999926544,
+      "pool_end": 96.20897499963272,
+      "total_accounts": 5,
+      "blowup_count": 5,
+      "eot_count": 0,
+      "wall_s": 62.3,
+      "bundle_path": "/Users/keihan14/kalgo-dash-v2/dashboard_data/p6_c0_F1_seed15120.json",
+      "conservative_max_levels": 62,
+      "conservative_s_0": 10.0,
+      "conservative_k": 0.0,
+      "conservative_tp_floor": 1.0
+    },
+    {
+      "candidate": "C2B",
+      "fold": "F1",
+      "seed": 0,
+      "seed_idx": 0,
+      "offset_days": 0,
+      "total_return": 0.5543694697840758,
+      "pool_end": 2771.847348920379,
+      "total_accounts": 7,
+      "blowup_count": 6,
+      "eot_count": 1,
+      "wall_s": 150.5,
+      "bundle_path": "/Users/keihan14/kalgo-dash-v2/dashboard_data/p6_c2b_F1_seed0.json",
+      "conservative_max_levels": 30,
+      "conservative_s_0": 3.9397024275646046,
+      "conservative_k": 2.0,
+      "conservative_tp_floor": 1.9698512137823023
+    },
+    {
+      "candidate": "C2B",
+      "fold": "F1",
+      "seed": 15120,
+      "seed_idx": 1,
+      "offset_days": 7,
+      "total_return": 0.3299531920703049,
+      "pool_end": 1649.7659603515244,
+      "total_accounts": 7,
+      "blowup_count": 6,
+      "eot_count": 1,
+      "wall_s": 146.0,
+      "bundle_path": "/Users/keihan14/kalgo-dash-v2/dashboard_data/p6_c2b_F1_seed15120.json",
+      "conservative_max_levels": 30,
+      "conservative_s_0": 3.9397024275646046,
+      "conservative_k": 2.0,
+      "conservative_tp_floor": 1.9698512137823023
+    }
+  ],
+  "per_candidate": {
+    "C0": {
+      "label": "uniform 10p + fixed TP",
+      "per_fold": {
+        "F1": {
+          "irs": [
+            2.4815,
+            0.0192
+          ],
+          "mean_ir": 1.2504
+        }
+      },
+      "aggregate_mean_ir": 1.2504,
+      "passes_acceptance_floor": true,
+      "total_blowups": 11,
+      "total_accounts": 12
+    },
+    "C2B": {
+      "label": "affine k=2 + two-phase TP",
+      "per_fold": {
+        "F1": {
+          "irs": [
+            0.5544,
+            0.33
+          ],
+          "mean_ir": 0.4422
+        }
+      },
+      "aggregate_mean_ir": 0.4422,
+      "passes_acceptance_floor": false,
+      "total_blowups": 12,
+      "total_accounts": 14
+    }
+  },
+  "sign_tests_vs_c0": {},
+  "no_fold_regression": null,
+  "winner": "C0",
+  "overall_pass": true,
+  "wall_total_s": 573.2
+}
