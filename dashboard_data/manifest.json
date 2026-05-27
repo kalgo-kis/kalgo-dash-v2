@@ -13,7 +13,7 @@
       "total_accounts": 19,
       "blowup_count": 19,
       "bank_end": 201.70450999979937,
-      "timestamp": "2026-05-25T20:10:20",
+      "timestamp": "2026-05-27T13:18:06",
       "bundled": true,
       "source": "shared"
     },
@@ -28,7 +28,7 @@
       "total_accounts": 32,
       "blowup_count": 32,
       "bank_end": 199.83047272017365,
-      "timestamp": "2026-05-25T20:10:21",
+      "timestamp": "2026-05-27T13:18:06",
       "bundled": true,
       "source": "shared"
     },
@@ -43,7 +43,7 @@
       "total_accounts": 7,
       "blowup_count": 6,
       "bank_end": 5785.954702927629,
-      "timestamp": "2026-05-25T20:10:21",
+      "timestamp": "2026-05-27T13:18:06",
       "bundled": true,
       "source": "shared"
     },
@@ -58,7 +58,7 @@
       "total_accounts": 6,
       "blowup_count": 5,
       "bank_end": 9020.283352102168,
-      "timestamp": "2026-05-25T20:10:21",
+      "timestamp": "2026-05-27T13:18:06",
       "bundled": true,
       "source": "shared"
     }

@@ -32,7 +32,7 @@
       "total_accounts": 19,
       "blowup_count": 19,
       "eot_count": 0,
-      "wall_s": 685.9,
+      "wall_s": 662.2,
       "bundle_path": "/Users/keihan14/kalgo-dash-v2/dashboard_data/p6_c0_F1_seed0.json",
       "conservative_max_levels": 62,
       "conservative_s_0": 10.0,
@@ -50,7 +50,7 @@
       "total_accounts": 32,
       "blowup_count": 32,
       "eot_count": 0,
-      "wall_s": 120.5,
+      "wall_s": 67.4,
       "bundle_path": "/Users/keihan14/kalgo-dash-v2/dashboard_data/p6_c0_F1_seed15120.json",
       "conservative_max_levels": 62,
       "conservative_s_0": 10.0,
@@ -68,7 +68,7 @@
       "total_accounts": 7,
       "blowup_count": 6,
       "eot_count": 1,
-      "wall_s": 138.5,
+      "wall_s": 79.1,
       "bundle_path": "/Users/keihan14/kalgo-dash-v2/dashboard_data/p6_c2b_F1_seed0.json",
       "conservative_max_levels": 30,
       "conservative_s_0": 3.9397024275646046,
@@ -86,7 +86,7 @@
       "total_accounts": 6,
       "blowup_count": 5,
       "eot_count": 1,
-      "wall_s": 151.2,
+      "wall_s": 82.7,
       "bundle_path": "/Users/keihan14/kalgo-dash-v2/dashboard_data/p6_c2b_F1_seed15120.json",
       "conservative_max_levels": 30,
       "conservative_s_0": 3.9397024275646046,
@@ -139,5 +139,5 @@
   "no_fold_regression": true,
   "winner": "C2B",
   "overall_pass": false,
-  "wall_total_s": 1154.7
+  "wall_total_s": 948.1
 }
