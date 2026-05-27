@@ -463,26 +463,62 @@ function findCandleAtTime(bundle, unixTime) {
   return candles[lo];
 }
 
-function buildComplianceRows(bundle) {
-  const cfg = bundle.policy_config || {};
-  const tiers = getTiersFromConfig(cfg);
-  if (!tiers.length) return [];
-
-  // T6 (2026-05-25): the CONSERVATIVE regime's spacing schedule and TP
-  // rule are NOT tier-based. Read them from policy_config.t6_schedule
-  // (added in kalgo-platform's build_policy_config T6 patch) so the
-  // compliance check honors the actual rule the engine fired on. Legacy
-  // bundles without t6_schedule fall through to tier-based checks
-  // unchanged.
-  const t6 = cfg.t6_schedule || {
+// T6 (2026-05-25 follow-up): build a per-regime view object the compliance
+// loop can index by regime name. Falls back to top-level config for
+// legacy single-config bundles. Returns {tiers, t6, isAffine, isTwoPhaseTP}.
+function _regimeView(rawCfg) {
+  const t6 = rawCfg.t6_schedule || {
     spacing_schedule_type: "UNIFORM",
     affine_s_0: 0, affine_k: 0,
     tp_mode: "FIXED", tp_floor_pips: 0,
     trouble_ul_threshold_dollars: 0,
     max_levels: 0,
   };
-  const isAffine = t6.spacing_schedule_type === "AFFINE";
-  const isTwoPhaseTP = t6.tp_mode === "DEPTH_SYNCED_TWO_PHASE";
+  return {
+    tiers: getTiersFromConfig(rawCfg),
+    t6,
+    isAffine: t6.spacing_schedule_type === "AFFINE",
+    isTwoPhaseTP: t6.tp_mode === "DEPTH_SYNCED_TWO_PHASE",
+  };
+}
+
+// Locate the active regime at time `t` from an account's regime timeline.
+// The timeline is dense — one entry per basket close + a deploy-time
+// bootstrap row. The regime at time t is the latest timeline entry with
+// time_unix <= t. Returns "conservative" for any t before the first
+// entry (deploy-time bootstrap is always CONSERVATIVE).
+function _regimeAtTime(regimeTimeline, t) {
+  if (!regimeTimeline || !regimeTimeline.length) return "conservative";
+  let lo = 0, hi = regimeTimeline.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (regimeTimeline[mid].time_unix <= t) lo = mid;
+    else hi = mid - 1;
+  }
+  return (regimeTimeline[lo].regime || "conservative").toLowerCase();
+}
+
+function buildComplianceRows(bundle) {
+  const cfg = bundle.policy_config || {};
+
+  // T6 (2026-05-25 follow-up): per-regime schedule views from
+  // `policy_config.regime_schedules`. Each entry's compliance check
+  // picks the matching view by reading the account's regime at the
+  // entry's time from `account.v18.regime_timeline`. Legacy bundles
+  // without regime_schedules fall back to a single shared view built
+  // from the top-level config (the pre-multi-regime behavior).
+  const regimeSchedules = cfg.regime_schedules || null;
+  const singleView = _regimeView(cfg);
+  function viewFor(regimeName) {
+    if (!regimeSchedules) return singleView;
+    return _regimeView(regimeSchedules[regimeName] || cfg);
+  }
+  // If there are no tiers in any view, the bundle has no FlexGrid info
+  // at all — nothing to validate.
+  const anyTiers = singleView.tiers.length ||
+    (regimeSchedules && Object.values(regimeSchedules)
+      .some(v => getTiersFromConfig(v).length));
+  if (!anyTiers) return [];
 
   // Approximate the EOT close time from the last candle, used for survivor
   // baskets that the runner closes via _close_all_eot.
@@ -493,6 +529,9 @@ function buildComplianceRows(bundle) {
   for (const acct of (bundle.accounts || [])) {
     const entries = (acct.trace && acct.trace.grid_entry_events) || [];
     const closes  = acct.basket_close_events || [];
+    // Per-account regime timeline (V18RegimePolicy populates this at
+    // every basket close — see v18_regime_policy.on_basket_close).
+    const regimeTimeline = (acct.v18 && acct.v18.regime_timeline) || [];
 
     // Merge entries + closes chronologically
     const events = [];
@@ -537,7 +576,17 @@ function buildComplianceRows(bundle) {
         // (the gap can span several levels). Lot is still tier-correct;
         // skip only the spacing check for these.
         const isReAnchor = tagLower.endsWith("_reanchor");
-        const tier = activeTierForDepth(tiers, depth);
+        // T6 multi-regime: pick the schedule view for the active regime
+        // at this entry's time. CONSERVATIVE → affine schedule; MODERATE
+        // / AGGRESSIVE → SB FlexGrid tier-based. The compliance panel
+        // applies the right rule for the regime the engine was actually
+        // running in when this entry fired.
+        const regimeName = _regimeAtTime(regimeTimeline, ev.time);
+        const view = viewFor(regimeName);
+        const tiers = view.tiers;
+        const t6 = view.t6;
+        const isAffine = view.isAffine;
+        const tier = activeTierForDepth(tiers, depth) || view.tiers[0];
 
         // Lot + spacing expectations — adaptive rows skip both (their
         // sizing is policy-overridden); re-anchor rows skip spacing only.
@@ -662,6 +711,16 @@ function buildComplianceRows(bundle) {
         const s = state[sideKey];
         const reason = (c.reason || "").toLowerCase();
 
+        // T6 multi-regime: pick the active-regime view at close time
+        // (basket can only be in one regime — the one when it opened,
+        // since regime swaps happen at basket-close boundaries and
+        // affect the NEXT basket). Use the regime active at close
+        // time; for a close it equals the regime that drove the basket.
+        const closeRegime = _regimeAtTime(regimeTimeline, ev.time);
+        const closeView = viewFor(closeRegime);
+        const t6 = closeView.t6;
+        const isTwoPhaseTP = closeView.isTwoPhaseTP;
+
         if (reason === "tp" && isTwoPhaseTP && s.entries.length > 0) {
           // WAPP = Σ(price × lots) / Σ(lots) over the SURVIVING entries
           // (those that closed at this TP event, not earlier partial
@@ -684,13 +743,24 @@ function buildComplianceRows(bundle) {
           const expectedSchedTp = t6.affine_s_0 + (N - 1) * t6.affine_k;
           const expectedFloorTp = t6.tp_floor_pips;
           const tol = COMPLIANCE_SPACING_TOL_PIPS;
-          const matchSched = Math.abs(actualTpPips - expectedSchedTp) <= tol;
-          const matchFloor = Math.abs(actualTpPips - expectedFloorTp) <= tol;
+          // TP target is a price threshold; the bar's bid/ask must cross
+          // it for the trigger to fire. The broker's close_price is the
+          // bar's current quote, which can be DEEPER than the target if
+          // the bar's wick gapped past during the minute. One-sided
+          // tolerance: OK if actual is at or beyond the relevant target.
+          // BAD only when actual fires BELOW the break-even floor —
+          // that's a real "TP in negative-PnL territory" bug.
+          const matchSched = actualTpPips >= (expectedSchedTp - tol);
+          const matchFloor = actualTpPips >= (expectedFloorTp - tol);
+          const belowFloor = actualTpPips < (expectedFloorTp - tol);
           let tpLabel;
-          if (matchSched && !matchFloor) tpLabel = `phase 1 (s_${N}=${expectedSchedTp.toFixed(1)}p)`;
-          else if (matchFloor && !matchSched) tpLabel = `phase 2 (floor=${expectedFloorTp.toFixed(2)}p)`;
-          else if (matchSched && matchFloor) tpLabel = `phase ambiguous (s_N ≈ floor)`;
-          else tpLabel = `MISMATCH (neither phase)`;
+          if (belowFloor) tpLabel = `BELOW FLOOR (${actualTpPips.toFixed(2)}p < ${expectedFloorTp.toFixed(2)}p)`;
+          else if (matchSched) tpLabel = `phase 1 (≥ s_${N}=${expectedSchedTp.toFixed(1)}p)`;
+          else if (matchFloor) tpLabel = `phase 2 (≥ floor=${expectedFloorTp.toFixed(2)}p)`;
+          else tpLabel = `between floor and s_N`;   // legitimate intermediate
+          // OK if not below floor. (Schedule-vs-floor distinction can't
+          // be made without phase-latch info from the bundle.)
+          const tpOk = !belowFloor;
           // Build a synthetic basket-id from one of the entries' row IDs.
           const basketRow = rows.filter(r => r.acct === acct.num && r.side === sideKey.toUpperCase())
                                 .slice(-N)[0];
@@ -716,8 +786,8 @@ function buildComplianceRows(bundle) {
             lot_ok: true,
             actual_spacing: actualTpPips,
             expected_spacing: matchSched ? expectedSchedTp : expectedFloorTp,
-            spacing_ok: matchSched || matchFloor,
-            ok: matchSched || matchFloor,
+            spacing_ok: tpOk,
+            ok: tpOk,
           });
         }
 
