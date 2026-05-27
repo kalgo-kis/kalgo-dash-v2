@@ -1399,7 +1399,7 @@ function renderAccountsTable(accounts) {
   // Pool→account and account→pool flows broken out per-account so the
   // operator can read "how much did the pool lend this account and how
   // much did it get back, and when" at a glance.
-  //   • took_from_pool      = stake (one-time, at deploy)
+  //   • took_from_pool      = stake (one-time, at deploy) — column label "Stake"
   //   • returned_during     = withdrawn (cumulative TPs above target during life)
   //   • returned_at_close   = residual at close (= 0 on blowup_loss, > 0 if
   //                           account survived TPs past stake or closed with cash)
@@ -1420,7 +1420,7 @@ function renderAccountsTable(accounts) {
     outcome:           { label: "Outcome",    tip: "How the account ended — blowup (margin stop-out) or survived to end of evaluation period" },
     deployed_at:       { label: "Deployed",   tip: "Date the account was first funded by the pool" },
     lifetime_days:     { label: "Days",       tip: "Account lifetime from deploy to close" },
-    took_from_pool:    { label: "Took",       tip: "Money the POOL sent to this account at deploy (one-time outflow from pool). Equals stake." },
+    took_from_pool:    { label: "Stake",      tip: "Money the POOL sent to this account at deploy (one-time outflow from pool). Equals the account's stake." },
     returned_during:   { label: "Sent (during)", tip: "Money the account sent BACK to the pool during its life — cumulative post-TP withdrawals to the pool above the account's target balance." },
     returned_at_close: { label: "Sent (at close)", tip: "Money the account sent back to the pool at close. 0 for full blowup. > 0 if the broker returned residual cash at stop-out, EOT close, or surrender." },
     pool_net_pnl:      { label: "Pool P&L",   tip: "Net for the pool from this account = Sent − Took = (returned_during + returned_at_close − took_from_pool). Same as `acct.net` but framed as the POOL's gain/loss on this deployment." },
@@ -1489,7 +1489,7 @@ function renderAccountsTable(accounts) {
 
   // Fleet totals row — aggregates of the per-account pool flows above.
   // Columns map 1-1 to the per-account row:
-  //   # | Outcome | Deployed | Days | Took | Sent(during) | Sent(at close) | Pool P&L
+  //   # | Outcome | Deployed | Days | Stake | Sent(during) | Sent(at close) | Pool P&L
   // The investor-level paid-in / distributed / gross-deployed numbers
   // are surfaced as tooltips on the Deployed cell, because those are
   // cross-account aggregates that don't map to a single column.
