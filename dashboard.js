@@ -1386,30 +1386,67 @@ function renderAccountsTable(accounts) {
   const econ = state._investorEcon || computeInvestorEconomics(accounts, startCap, stakePerAcct);
   state._investorEcon = econ;
 
+  // Pool→account and account→pool flows broken out per-account so the
+  // operator can read "how much did the pool lend this account and how
+  // much did it get back, and when" at a glance.
+  //   • took_from_pool      = stake (one-time, at deploy)
+  //   • returned_during     = withdrawn (cumulative TPs above target during life)
+  //   • returned_at_close   = residual at close (= 0 on blowup_loss, > 0 if
+  //                           account survived TPs past stake or closed with cash)
+  //   • returned_total      = withdrawn + residual_at_close
+  //   • pool_net_pnl        = returned_total − took_from_pool (== acct.net)
+  // The investor-level `capitalCall` and `distribution` from
+  // computeInvestorEconomics live on the FLEET totals row, where they
+  // belong — they're aggregates across multiple accounts, not per-account
+  // properties.
+  const fmtDate = (t) => {
+    if (!t) return "—";
+    const d = new Date(t * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`;
+  };
   const colDefs = {
-    num:         { label: "#",            tip: "Account number (deploy order)" },
-    outcome:     { label: "Outcome",      tip: "How the account ended — blowup (margin stop-out) or survived to end of evaluation period" },
-    stake:       { label: "Stake",        tip: "Capital deployed into this account" },
-    net:         { label: "Net P&L",      tip: "Extracted + residual − stake. Positive = account paid for itself" },
-    capitalCall: { label: "Cap. Call",     tip: "New money requested from investor for this deployment. Zero when operating cash covers the stake (self-funding)" },
-    distribution:{ label: "Distribution", tip: "Cash returned to investor after account closes. Excess above next stake is distributed; final account returns all remaining cash" },
-    cashAfter:   { label: "Cash",         tip: "Operating cash available after this account closes. Must cover next stake or a capital call is needed" },
-    lifetime_days:{ label: "Life",        tip: "Account lifetime in days from deploy to close" },
+    num:               { label: "#",          tip: "Account number (deploy order)" },
+    outcome:           { label: "Outcome",    tip: "How the account ended — blowup (margin stop-out) or survived to end of evaluation period" },
+    deployed_at:       { label: "Deployed",   tip: "Date the account was first funded by the pool" },
+    lifetime_days:     { label: "Days",       tip: "Account lifetime from deploy to close" },
+    took_from_pool:    { label: "Took",       tip: "Money the POOL sent to this account at deploy (one-time outflow from pool). Equals stake." },
+    returned_during:   { label: "Sent (during)", tip: "Money the account sent BACK to the pool during its life — cumulative post-TP withdrawals to the pool above the account's target balance." },
+    returned_at_close: { label: "Sent (at close)", tip: "Money the account sent back to the pool at close. 0 for full blowup. > 0 if the broker returned residual cash at stop-out, EOT close, or surrender." },
+    pool_net_pnl:      { label: "Pool P&L",   tip: "Net for the pool from this account = Sent − Took = (returned_during + returned_at_close − took_from_pool). Same as `acct.net` but framed as the POOL's gain/loss on this deployment." },
   };
   const pnlFmt = v => `<span style="color:var(--${v >= 0 ? "green" : "red"})">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>`;
+  const moneyOut = v => v > 0 ? `<span style="color:var(--red)">${fmtMoney(v)}</span>` : `<span style="color:var(--text-muted)">—</span>`;
+  const moneyIn  = v => v > 0 ? `<span style="color:var(--green)">${fmtMoney(v)}</span>` : `<span style="color:var(--text-muted)">—</span>`;
   const cols = [
-    { key: "num",          fmt: v => v },
-    { key: "outcome",      fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
-    { key: "stake",        fmt: fmtMoney },
-    { key: "net",          fmt: pnlFmt },
-    { key: "capitalCall",  fmt: v => v > 0 ? `<span style="color:var(--red)">${fmtMoney(v)}</span>` : `<span style="color:var(--text-muted)">—</span>` },
-    { key: "distribution", fmt: v => v > 0 ? `<span style="color:var(--green)">${fmtMoney(v)}</span>` : `<span style="color:var(--text-muted)">—</span>` },
-    { key: "cashAfter",    fmt: fmtMoney },
-    { key: "lifetime_days",fmt: v => fmtNum(v, 1) + "d" },
+    { key: "num",               fmt: v => v },
+    { key: "outcome",           fmt: v => `<span class="outcome-badge ${v}">${(v||"").replace("_"," ")}</span>` },
+    { key: "deployed_at",       fmt: fmtDate },
+    { key: "lifetime_days",     fmt: v => fmtNum(v, 1) + "d" },
+    { key: "took_from_pool",    fmt: moneyOut },
+    { key: "returned_during",   fmt: moneyIn },
+    { key: "returned_at_close", fmt: moneyIn },
+    { key: "pool_net_pnl",      fmt: pnlFmt },
   ];
 
-  // Use enriched accounts from investor economics (already in deploy order)
-  const rows = [...econ.accounts];
+  // Use enriched accounts from investor economics (already in deploy
+  // order). Project each onto the pool-flow view we display.
+  //   acct.net = withdrawn − stake + residual_at_close
+  // So residual_at_close = net − withdrawn + stake.
+  const rows = econ.accounts.map(a => {
+    const stake = a.stake || 0;
+    const withdrawn = a.withdrawn || 0;
+    const net = a.net || 0;
+    const residualAtClose = Math.max(0, net - withdrawn + stake);
+    return {
+      ...a,
+      deployed_at: a.deploy_time || 0,
+      took_from_pool: stake,
+      returned_during: withdrawn,
+      returned_at_close: residualAtClose,
+      pool_net_pnl: net,
+    };
+  });
 
   // Sort
   const sortKey = state._tableSortCol;
@@ -1440,19 +1477,28 @@ function renderAccountsTable(accounts) {
     return `<tr data-num="${a.num}">${tds}</tr>`;
   }).join("");
 
-  // Fleet summary row — investor-level totals
+  // Fleet totals row — aggregates of the per-account pool flows above.
+  // Columns map 1-1 to the per-account row:
+  //   # | Outcome | Deployed | Days | Took | Sent(during) | Sent(at close) | Pool P&L
+  // The investor-level paid-in / distributed / gross-deployed numbers
+  // are surfaced as tooltips on the Deployed cell, because those are
+  // cross-account aggregates that don't map to a single column.
   const t = econ.totals;
   const profitable = accounts.filter(a => (a.net || 0) >= 0).length;
   const calendarDays = m.total_calendar_days || 730;
+  const sumTook       = rows.reduce((s, r) => s + r.took_from_pool, 0);
+  const sumDuring     = rows.reduce((s, r) => s + r.returned_during, 0);
+  const sumAtClose    = rows.reduce((s, r) => s + r.returned_at_close, 0);
+  const sumPoolNetPnL = rows.reduce((s, r) => s + r.pool_net_pnl, 0);
   tbody.innerHTML += `<tr class="totals-row">
     <td>FLEET</td>
     <td>${profitable}/${accounts.length} profit</td>
-    <td title="Investor committed ${fmtMoney(t.committed)}">\u2014</td>
-    <td>${pnlFmt(t.investorProfit)}</td>
-    <td title="Total new capital called from investor"><span style="color:var(--red)">${fmtMoney(t.totalCalled)}</span></td>
-    <td title="Total cash returned to investor"><span style="color:var(--green)">${fmtMoney(t.totalDistributed)}</span></td>
-    <td title="Return on called capital: ${fmtNum(t.returnOnCalled, 2)}x">\u2014</td>
+    <td title="Investor paid-in ${fmtMoney(t.totalCalled)} → distributed ${fmtMoney(t.totalDistributed)} (gross deployed ${fmtMoney(t.totalGrossDeployed)})">—</td>
     <td>${calendarDays}d</td>
+    <td title="Σ stakes — total money the pool ever sent to accounts (gross, recycling counted)"><span style="color:var(--red)">${fmtMoney(sumTook)}</span></td>
+    <td title="Σ post-TP withdrawals across all accounts"><span style="color:var(--green)">${fmtMoney(sumDuring)}</span></td>
+    <td title="Σ residuals at account close (mostly 0 for blowups)"><span style="color:var(--green)">${fmtMoney(sumAtClose)}</span></td>
+    <td title="Σ pool P&L per account = investor profit on this fold">${pnlFmt(sumPoolNetPnL)}</td>
   </tr>`;
 
   // Click handlers — sort
@@ -1632,6 +1678,30 @@ function setupCharts() {
     crosshairMarkerVisible: false,
     lastValueVisible: false,
     priceLineVisible: false,
+  });
+  // 2026-05-26: pool balance as a second series on the same chart.
+  // The Investor Net P&L step function is great for "are we ahead of
+  // committed?" but it doesn't make the POOL→ACCOUNT flow obvious.
+  // The pool balance line shows the dollar amount sitting in the pool
+  // at every bar — drops sharply when an account is deployed, rises
+  // when an account extracts a TP or returns residual at close. So
+  // the operator can SEE when each account takes/sends money to the
+  // pool, not just the aggregate investor position.
+  state.poolBalanceSeries = state.bankChart.addLineSeries({
+    color: "#58a6ff", lineWidth: 2, lineStyle: 0,
+    title: "Pool balance",
+    crosshairMarkerVisible: true,
+    priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+    // Bind to the LEFT axis so the pool balance line (absolute
+    // dollars, ~$5,000–$9,000) doesn't squash the Investor Net P&L
+    // baseline series (centered at 0, ranges roughly −$5,000 to
+    // +$5,000). Right axis keeps net P&L; left axis carries pool
+    // balance.
+    priceScaleId: "left",
+  });
+  state.bankChart.priceScale("left").applyOptions({
+    visible: true,
+    borderColor: "rgba(88, 166, 255, 0.4)",
   });
   state.savingsSeries = state.bankSeries;
   state.totalSeries = null;
@@ -2183,6 +2253,23 @@ function populateBankChart(b) {
   }
 
   state.bankSeries.setData(cleanPnl);
+
+  // 2026-05-26: pool balance overlay. Powers the "see when each
+  // account took/sent money" reading. `bundle.pool_curve` is a dense
+  // series of `{time, pool}` samples — feed it straight into the
+  // line series. Each sharp dip = a deploy; each step up = a TP
+  // extraction or close residual.
+  if (state.poolBalanceSeries && Array.isArray(b.pool_curve) && b.pool_curve.length) {
+    const poolPoints = b.pool_curve.map(p => ({ time: p.time, value: p.pool }));
+    // Dedupe same-time points (LightweightCharts requires strictly increasing time)
+    const seenT = new Map();
+    for (const p of poolPoints) seenT.set(p.time, p.value);
+    const dedupedPool = [...seenT.entries()].sort((a, b) => a[0] - b[0])
+      .map(([time, value]) => ({ time, value }));
+    state.poolBalanceSeries.setData(dedupedPool);
+  } else if (state.poolBalanceSeries) {
+    state.poolBalanceSeries.setData([]);
+  }
 
   // Break-even reference at $0
   const rangeStart = candles.length ? candles[0].t : (cleanPnl[0]?.time);
