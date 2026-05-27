@@ -568,7 +568,17 @@ function buildComplianceRows(bundle) {
         const sideKey = (e.dir || "").toLowerCase();
         if (sideKey !== "buy" && sideKey !== "sell") continue;
         const s = state[sideKey];
-        const depth = s.depth;          // depth BEFORE this entry (0-indexed)
+        // Use the ENGINE'S depth-at-fire as the source of truth — when
+        // a partial stop-out shrinks the basket from N to N − k, the
+        // next entry fires at depth N − k with tag `grid_{N-k}`. A
+        // naive incrementing counter would still report N + 1, causing
+        // a tier-lookup mismatch (the bundle's `depth_at_entry` field
+        // is parsed from the engine's tag and is the truth). Caught
+        // on 2026-05-26 inspecting A6.B174.T15 in p6_c0_F1_seed15120:
+        // tag=grid_4 after a partial-stopout drained 9 of 14 positions,
+        // verifier expected flex2/flex3 (depth 14) but engine fired at
+        // base (depth 4).
+        const depth = (e.depth_at_entry != null) ? e.depth_at_entry : s.depth;
         // Adaptive entries: tag is `adaptive_<level>` (e.g. `adaptive_12`).
         // Don't match on equality with "adaptive" — the engine emits an
         // index suffix per the OrderRequest construction in
@@ -656,12 +666,23 @@ function buildComplianceRows(bundle) {
               tierLabel = tier.label;
               tierName = tier.name;
             }
-            if (s.lastPrice !== null) {
+            // Skip spacing check when a partial stop-out shrunk the
+            // basket. lastPrice tracks the price of the prior entry I
+            // processed; after a partial close, the engine's
+            // basket.positions[-1] is a different position. Without
+            // knowing which position survived, the verifier can't
+            // reconstruct the engine's "previous entry" reference, so
+            // skip rather than report a false positive.
+            const partialStopoutDetected = s.lastPrice !== null && depth < s.depth;
+            if (s.lastPrice !== null && !partialStopoutDetected) {
               actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
               spacingOk = Math.abs(actualSpacing - expectedSpacing) <= COMPLIANCE_SPACING_TOL_PIPS;
             } else {
               actualSpacing = null;
               spacingOk = null;
+              if (partialStopoutDetected) {
+                tierLabel = tierLabel + " (post-partial-stopout)";
+              }
             }
           }
         }
@@ -695,7 +716,11 @@ function buildComplianceRows(bundle) {
         };
         rows.push(row);
 
-        s.depth += 1;
+        // Update depth as engine's depth-at-fire + 1 (post-fill depth)
+        // so the next entry's partial-stopout detection compares
+        // correctly. Without this, a naive +1 increment doesn't see
+        // the depth-decrease event after a partial stop-out.
+        s.depth = depth + 1;
         s.lastPrice = e.price;
         // Track entry's exit info so the basket-close TP check can
         // exclude any entry liquidated earlier (e.g. by a partial
