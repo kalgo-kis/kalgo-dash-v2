@@ -468,6 +468,22 @@ function buildComplianceRows(bundle) {
   const tiers = getTiersFromConfig(cfg);
   if (!tiers.length) return [];
 
+  // T6 (2026-05-25): the CONSERVATIVE regime's spacing schedule and TP
+  // rule are NOT tier-based. Read them from policy_config.t6_schedule
+  // (added in kalgo-platform's build_policy_config T6 patch) so the
+  // compliance check honors the actual rule the engine fired on. Legacy
+  // bundles without t6_schedule fall through to tier-based checks
+  // unchanged.
+  const t6 = cfg.t6_schedule || {
+    spacing_schedule_type: "UNIFORM",
+    affine_s_0: 0, affine_k: 0,
+    tp_mode: "FIXED", tp_floor_pips: 0,
+    trouble_ul_threshold_dollars: 0,
+    max_levels: 0,
+  };
+  const isAffine = t6.spacing_schedule_type === "AFFINE";
+  const isTwoPhaseTP = t6.tp_mode === "DEPTH_SYNCED_TWO_PHASE";
+
   // Approximate the EOT close time from the last candle, used for survivor
   // baskets that the runner closes via _close_all_eot.
   const lastCandle = (bundle.candles_m15 || []).slice(-1)[0];
@@ -493,9 +509,13 @@ function buildComplianceRows(bundle) {
     // Per-side basket state: depth (count) + last entry price for spacing check.
     // Also track rows of the currently-open basket so we can backfill exit_price
     // and pnl when the basket closes.
+    //
+    // T6 (2026-05-25): also track the basket cycle's entry list so we can
+    // compute WAPP at close time and validate the basket TP rule
+    // (schedule-synced or break-even floor per spec §6).
     const state = {
-      buy:  { depth: 0, lastPrice: null, openRows: [] },
-      sell: { depth: 0, lastPrice: null, openRows: [] },
+      buy:  { depth: 0, lastPrice: null, openRows: [], entries: [] },
+      sell: { depth: 0, lastPrice: null, openRows: [], entries: [] },
     };
 
     for (const ev of events) {
@@ -556,7 +576,24 @@ function buildComplianceRows(bundle) {
             tierLabel = tier.label + " (re-anchor)";
             tierName = tier.name;
           } else {
-            expectedSpacing = tier.spacing_pips;
+            // T6: under AFFINE schedule, the expected spacing for the
+            // entry that brings basket from depth D → D+1 is
+            //   s_{D+1} = s_0 + D × k
+            // i.e. the spacing widens with each successive entry. The
+            // FlexGrid tier-based check would compare against a single
+            // constant `tier.spacing_pips` and flag every entry past
+            // depth 1 as off-grid. Switch to the schedule rule when the
+            // bundle's t6_schedule says AFFINE; legacy UNIFORM bundles
+            // keep the tier-based path.
+            if (isAffine) {
+              expectedSpacing = t6.affine_s_0 + depth * t6.affine_k;
+              tierLabel = `affine d=${depth}`;
+              tierName = "affine";
+            } else {
+              expectedSpacing = tier.spacing_pips;
+              tierLabel = tier.label;
+              tierName = tier.name;
+            }
             if (s.lastPrice !== null) {
               actualSpacing = Math.abs(e.price - s.lastPrice) / PIP_PRICE;
               spacingOk = Math.abs(actualSpacing - expectedSpacing) <= COMPLIANCE_SPACING_TOL_PIPS;
@@ -564,8 +601,6 @@ function buildComplianceRows(bundle) {
               actualSpacing = null;
               spacingOk = null;
             }
-            tierLabel = tier.label;
-            tierName = tier.name;
           }
         }
 
@@ -600,16 +635,96 @@ function buildComplianceRows(bundle) {
 
         s.depth += 1;
         s.lastPrice = e.price;
+        // Track entry's exit info so the basket-close TP check can
+        // exclude any entry liquidated earlier (e.g. by a partial
+        // stop-out) — partials don't terminate the basket, so they
+        // shouldn't be counted toward the basket's depth-at-TP-close.
+        s.entries.push({
+          price: e.price,
+          lots: e.lots,
+          exit_time_unix: e.exit_time_unix || null,
+          exit_reason: (e.exit_reason || "").toLowerCase() || null,
+        });
       } else {
-        // Basket close: just reset the per-side basket-cycle state (used for
-        // depth / spacing tracking). Per-trade exit_price and pnl come from
-        // the bundle's exact per-position close info that bundle.py joined
-        // by entry_id — see entry construction below.
-        const sideKey = (ev.data.closed_basket || "").toLowerCase();
-        if (sideKey === "buy" || sideKey === "sell") {
-          state[sideKey].depth = 0;
-          state[sideKey].lastPrice = null;
+        // Basket close. T6: emit a TP-compliance row when the close is
+        // reason='tp' under DEPTH_SYNCED_TWO_PHASE — the close pip
+        // distance from WAPP should match EITHER the schedule-synced
+        // target (s_N = s_0 + (N−1)·k) OR the break-even floor
+        // (tp_floor_pips), where N is the basket's depth at close.
+        // If it matches neither (within tolerance), the close fired
+        // off-rule and the row is flagged bad.
+        //
+        // Stop-out closes are NOT TP-checked — the broker dictates the
+        // exit price, not the policy's TP rule.
+        const c = ev.data;
+        const sideKey = (c.closed_basket || "").toLowerCase();
+        if (sideKey !== "buy" && sideKey !== "sell") continue;
+        const s = state[sideKey];
+        const reason = (c.reason || "").toLowerCase();
+
+        if (reason === "tp" && isTwoPhaseTP && s.entries.length > 0) {
+          // WAPP = Σ(price × lots) / Σ(lots) over the SURVIVING entries
+          // (those that closed at this TP event, not earlier partial
+          // stop-outs). exit_time_unix === ev.time AND exit_reason ==
+          // 'tp' identifies the cohort that this basket close actually
+          // closed.
+          const survivors = s.entries.filter(ent =>
+            ent.exit_reason === "tp" && ent.exit_time_unix === ev.time
+          );
+          if (survivors.length === 0) continue;   // nothing to validate
+          let lotSum = 0, weightedPrice = 0;
+          for (const ent of survivors) {
+            lotSum += ent.lots;
+            weightedPrice += ent.price * ent.lots;
+          }
+          const wapp = lotSum > 0 ? weightedPrice / lotSum : 0;
+          const N = survivors.length;
+          const closePrice = c.close_price || 0;
+          const actualTpPips = Math.abs(closePrice - wapp) / PIP_PRICE;
+          const expectedSchedTp = t6.affine_s_0 + (N - 1) * t6.affine_k;
+          const expectedFloorTp = t6.tp_floor_pips;
+          const tol = COMPLIANCE_SPACING_TOL_PIPS;
+          const matchSched = Math.abs(actualTpPips - expectedSchedTp) <= tol;
+          const matchFloor = Math.abs(actualTpPips - expectedFloorTp) <= tol;
+          let tpLabel;
+          if (matchSched && !matchFloor) tpLabel = `phase 1 (s_${N}=${expectedSchedTp.toFixed(1)}p)`;
+          else if (matchFloor && !matchSched) tpLabel = `phase 2 (floor=${expectedFloorTp.toFixed(2)}p)`;
+          else if (matchSched && matchFloor) tpLabel = `phase ambiguous (s_N ≈ floor)`;
+          else tpLabel = `MISMATCH (neither phase)`;
+          // Build a synthetic basket-id from one of the entries' row IDs.
+          const basketRow = rows.filter(r => r.acct === acct.num && r.side === sideKey.toUpperCase())
+                                .slice(-N)[0];
+          const idMatch = basketRow ? /^(A\d+\.B\d+)/.exec(basketRow.id || "") : null;
+          const basketId = idMatch ? idMatch[1] : `A${acct.num}.B?`;
+          rows.push({
+            kind: "basket_close",
+            id: `${basketId}.TP`,
+            acct: acct.num,
+            time: ev.time,
+            side: sideKey.toUpperCase(),
+            depth: N,
+            tier: tpLabel,
+            tier_name: "tp_check",
+            price: wapp,            // displayed in "Entry" column = WAPP
+            tag: "tp_close",
+            exit_price: closePrice,
+            exit_reason: "tp",
+            exit_time_unix: ev.time,
+            pnl: c.pnl,
+            actual_lot: lotSum,
+            expected_lot: lotSum,
+            lot_ok: true,
+            actual_spacing: actualTpPips,
+            expected_spacing: matchSched ? expectedSchedTp : expectedFloorTp,
+            spacing_ok: matchSched || matchFloor,
+            ok: matchSched || matchFloor,
+          });
         }
+
+        // Reset per-side basket-cycle state for the next cycle
+        s.depth = 0;
+        s.lastPrice = null;
+        s.entries = [];
       }
     }
 
