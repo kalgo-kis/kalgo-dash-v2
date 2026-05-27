@@ -111,7 +111,13 @@
         <div class="metric-label">Investor Return</div>
         <div class="metric-value" id="hdr-poolreturn">—</div>
         <div class="metric-sub" id="hdr-poolreturn-sub">—</div>
-        <div class="metric-tip">total_distributed / total_called. How much the investor got back for every dollar actually called. Above 1.0x = profitable.</div>
+        <div class="metric-tip">total_distributed / total_called. How much the investor got back for every dollar actually called. Above 1.0x = profitable. <em>Note:</em> total_called is the CUMULATIVE sum of capital calls (calls re-deployed after distributions are counted again). See &ldquo;Peak Capital at Risk&rdquo; for the maximum simultaneously-outstanding amount.</div>
+      </div>
+      <div class="metric has-tip" id="fs-peakcapital">
+        <div class="metric-label">Peak Capital at Risk</div>
+        <div class="metric-value" id="hdr-peakcapital">—</div>
+        <div class="metric-sub" id="hdr-peakcapital-sub">—</div>
+        <div class="metric-tip">The largest cumulative deficit between calls and distributions at any single moment — i.e. the most the investor ever had simultaneously deployed. Distributions returned between calls reduce the simultaneous deficit, so this is &le; total_called. The sub-line shows return on peak capital = total_distributed / peak_underwater (a more flattering &ldquo;return on capital actually risked&rdquo; reading).</div>
       </div>
       <div class="metric has-tip" id="fs-expectancy">
         <div class="metric-label">Expectancy</div>

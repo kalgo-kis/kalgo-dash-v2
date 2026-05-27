@@ -243,6 +243,10 @@ function renderSummaryOnly(entry) {
   document.getElementById("hdr-expectancy").textContent = "—";
   document.getElementById("hdr-profitfactor").textContent = "—";
   document.getElementById("hdr-extractionratio").textContent = "—";
+  const peakEl0 = document.getElementById("hdr-peakcapital");
+  const peakSubEl0 = document.getElementById("hdr-peakcapital-sub");
+  if (peakEl0) peakEl0.textContent = "—";
+  if (peakSubEl0) peakSubEl0.textContent = "";
   document.getElementById("hdr-winrate").textContent = "—";
   document.getElementById("hdr-costs").textContent = "—";
   document.getElementById("data-warning-card").style.display = "";
@@ -284,6 +288,23 @@ function renderBundle(b) {
     const xrEl = document.getElementById("hdr-extractionratio");
     xrEl.textContent = fmtNum(capEff * 100, 0) + "%";
     xrEl.className = "metric-value " + (capEff < 1.0 ? "green" : "text");
+
+    // Peak Capital at Risk \u2014 the maximum simultaneous deficit (calls
+    // minus distributions). Distinct from totalCalled when distributions
+    // get re-called into later deploys. Sub-line shows return-on-peak.
+    const peakEl = document.getElementById("hdr-peakcapital");
+    const peakSubEl = document.getElementById("hdr-peakcapital-sub");
+    if (peakEl) {
+      const peak = econ.totals.peakUnderwater;
+      const ronpeak = econ.totals.returnOnPeakCapital;
+      peakEl.textContent = peak > 0 ? fmtMoney(peak) : "\u2014";
+      // No coloring on absolute capital \u2014 green/red would imply a
+      // judgement on the dollar amount, which has no inherent good/bad.
+      peakEl.className = "metric-value";
+      peakSubEl.textContent = peak > 0
+        ? `${fmtNum(ronpeak, 2)}x on peak (${fmtMoney(econ.totals.totalDistributed)} \u00f7 ${fmtMoney(peak)})`
+        : "\u2014";
+    }
   }
 
   // Win/loss stats
@@ -1251,6 +1272,15 @@ function computeInvestorEconomics(accounts, startingCapital, stakePerAccount) {
   let totalCalled = 0;
   let totalDistributed = 0;
   let remainingCommitment = startingCapital;
+  // Track the worst-case CUMULATIVE deficit between calls and distributions.
+  // peakUnderwater = max(totalCalled − totalDistributed) over the run. This
+  // is the "capital the investor actually had at risk at the worst moment" —
+  // distinct from totalCalled (cumulative gross), which is bigger when
+  // distributions get re-called into later deploys. Operator caught on
+  // 2026-05-26: on a 6-account run, totalCalled was $5000 (full commitment)
+  // but peakUnderwater was only $3189 — distributions from A4 fully refunded
+  // earlier calls and were partially re-called for A5.
+  let peakUnderwater = 0;
 
   const enriched = ordered.map((a, i) => {
     const acctStake = a.stake || stake;
@@ -1263,6 +1293,11 @@ function computeInvestorEconomics(accounts, startingCapital, stakePerAccount) {
     const capitalCall = Math.min(shortfall, remainingCommitment);
     totalCalled += capitalCall;
     remainingCommitment -= capitalCall;
+    // Sample the deficit AFTER the call but BEFORE any distribution from
+    // this cycle (i.e., the moment the investor's outflows are at their
+    // highest for this deploy). distributions later in the loop reduce
+    // the deficit again.
+    peakUnderwater = Math.max(peakUnderwater, totalCalled - totalDistributed);
 
     // Deploy
     operatingCash = operatingCash + capitalCall - acctStake;
@@ -1287,16 +1322,24 @@ function computeInvestorEconomics(accounts, startingCapital, stakePerAccount) {
     };
   });
 
+  const profit = totalDistributed - totalCalled;
   return {
     accounts: enriched,
     totals: {
       committed: startingCapital,
       totalCalled: Math.round(totalCalled * 100) / 100,
       totalDistributed: Math.round(totalDistributed * 100) / 100,
-      investorProfit: Math.round((totalDistributed - totalCalled) * 100) / 100,
+      investorProfit: Math.round(profit * 100) / 100,
+      // Return on cumulative gross called — pre-existing metric.
       returnOnCalled: totalCalled > 0 ? totalDistributed / totalCalled : 0,
       capitalEfficiency: startingCapital > 0 ? totalCalled / startingCapital : 0,
       unusedCommitment: Math.round(remainingCommitment * 100) / 100,
+      // 2026-05-26: peak-underwater accounting. The capital that was
+      // SIMULTANEOUSLY at risk at the run's worst moment, and the
+      // multiple of that you got back.
+      peakUnderwater: Math.round(peakUnderwater * 100) / 100,
+      returnOnPeakCapital: peakUnderwater > 0 ? totalDistributed / peakUnderwater : 0,
+      profitOnPeakCapital: peakUnderwater > 0 ? profit / peakUnderwater : 0,
     },
   };
 }
@@ -2120,6 +2163,31 @@ function populateBankChart(b) {
       { time: rangeStart, value: 0 },
       { time: rangeEnd,   value: 0 },
     ]);
+  }
+
+  // 2026-05-26: dashed reference line at the worst point of cum_dist −
+  // cum_called. Makes "Peak Capital at Risk" visible directly on the
+  // chart — the lowest point of the step function. Without this, the
+  // operator has to eyeball the dip to know what was the maximum
+  // simultaneously-deployed amount.
+  if (econ && econ.totals.peakUnderwater > 0
+      && rangeStart != null && rangeEnd != null && rangeStart < rangeEnd) {
+    if (!state.peakUnderwaterLine) {
+      state.peakUnderwaterLine = state.bankChart.addLineSeries({
+        color: "#d29922", lineWidth: 1, lineStyle: 2,
+        title: "Peak Capital at Risk",
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+        lastValueVisible: true,
+      });
+    }
+    const peakNeg = -econ.totals.peakUnderwater;
+    state.peakUnderwaterLine.setData([
+      { time: rangeStart, value: peakNeg },
+      { time: rangeEnd,   value: peakNeg },
+    ]);
+  } else if (state.peakUnderwaterLine) {
+    state.peakUnderwaterLine.setData([]);
   }
 
   // Peak-loss reference: horizontal line at the deepest underwater point
