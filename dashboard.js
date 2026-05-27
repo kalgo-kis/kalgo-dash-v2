@@ -2395,11 +2395,36 @@ function showTraceOverlay(a) {
             time_unix: ev.time,
           },
         });
-        // Draw dashed lines from each pending entry to this close
+        // Draw dashed lines from each pending entry to this close.
         // (reuses the `pending` array declared above for the basket ID)
-        const lineColor = side === "buy" ? "rgba(63,185,80,0.35)" : "rgba(248,81,73,0.35)";
+        //
+        // Stop-out closes get a DISTINCT visual treatment per operator
+        // direction 2026-05-25: orange-tinted horizontal lines extending
+        // to the close time at the ENTRY price (rather than green/red
+        // lines to the close price). Rationale: when scrolling through a
+        // long-fold chart, the basket that killed the account is the
+        // operationally interesting one; the entry-level horizontal
+        // signature with a distinct color makes it pop out at a glance.
+        // The TRUE close price + per-position close prices are still
+        // surfaced via the basket close marker and the closes table —
+        // this is purely a visual-prominence cue.
+        //
+        // Before 2026-05-25's runner stopout-close-event fix, blowup
+        // baskets had NO matching close event, so the fallback below
+        // (pendingBuy/Sell at blowup_time) drew this exact orange-
+        // horizontal signature. The fix correctly recorded the stopout
+        // close, but inadvertently lost the visual cue. This restores
+        // it explicitly via reason inspection rather than implicitly
+        // via missing data.
+        const isStopout = (c.reason || "").toLowerCase() === "stopout";
+        const lineColor = isStopout
+          ? "rgba(219,109,40,0.5)"                                          // orange
+          : (side === "buy" ? "rgba(63,185,80,0.35)" : "rgba(248,81,73,0.35)");
         for (const entry of pending) {
-          basketLines.push({ fromT: entry.t, fromV: entry.v, toT: closeT, toV: cp, color: lineColor });
+          // Stop-out: horizontal line to close time at the entry price.
+          // TP: diagonal line from entry to actual close price.
+          const lineToV = isStopout ? entry.v : cp;
+          basketLines.push({ fromT: entry.t, fromV: entry.v, toT: closeT, toV: lineToV, color: lineColor });
         }
         // Clear the pending basket for this side
         if (side === "buy") pendingBuy.length = 0;
