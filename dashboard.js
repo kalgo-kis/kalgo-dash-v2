@@ -68,6 +68,16 @@ const state = {
   accountsById: {},    // account_num -> account
   fullPriceRange: null, // [from, to] seconds
   hwmSeries: null,     // high-water mark line on pool chart
+  // 2026-05-26: pool balance overlay on the Investor Net P&L chart.
+  // Toggleable via the chart-header button. Default off — most users
+  // care about the net-P&L story first; the pool line is for users
+  // who want to see the WHEN of deploy/return events. Preference
+  // persists across reloads via localStorage.
+  poolBalanceSeries: null,
+  showPoolBalance: (() => {
+    try { return localStorage.getItem("dash.showPoolBalance") === "true"; }
+    catch { return false; }
+  })(),
 };
 
 // ----- helpers -----
@@ -1687,21 +1697,28 @@ function setupCharts() {
   // when an account extracts a TP or returns residual at close. So
   // the operator can SEE when each account takes/sends money to the
   // pool, not just the aggregate investor position.
+  // Pool-balance line on the Investor Net P&L chart. COLORS.cyan
+  // (#56d4dd) is distinct from the chart's other elements (green/red
+  // baselines, gold peak-underwater, gray break-even) and feels less
+  // forceful than the previous #58a6ff blue. Toggle-able via the
+  // "Show/Hide pool balance" button — preference persists across
+  // bundle loads via localStorage key `dash.showPoolBalance`.
   state.poolBalanceSeries = state.bankChart.addLineSeries({
-    color: "#58a6ff", lineWidth: 2, lineStyle: 0,
+    color: COLORS.cyan, lineWidth: 2, lineStyle: 0,
     title: "Pool balance",
     crosshairMarkerVisible: true,
     priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
-    // Bind to the LEFT axis so the pool balance line (absolute
-    // dollars, ~$5,000–$9,000) doesn't squash the Investor Net P&L
-    // baseline series (centered at 0, ranges roughly −$5,000 to
-    // +$5,000). Right axis keeps net P&L; left axis carries pool
-    // balance.
+    // Bind to the LEFT axis so the absolute-dollar pool balance line
+    // (~$5,000–$9,000) doesn't squash the Investor Net P&L baseline
+    // series (centered at 0, ranges roughly −$5,000 to +$5,000).
+    // `visible` is toggled by the chart-header button (see
+    // bindBankChartToggles).
     priceScaleId: "left",
+    visible: state.showPoolBalance === true,
   });
   state.bankChart.priceScale("left").applyOptions({
-    visible: true,
-    borderColor: "rgba(88, 166, 255, 0.4)",
+    visible: state.showPoolBalance === true,
+    borderColor: "rgba(86, 212, 221, 0.4)",
   });
   state.savingsSeries = state.bankSeries;
   state.totalSeries = null;
@@ -2175,6 +2192,37 @@ function drawAccountBands(b) {
   drawFrame();
 }
 
+// Apply the current state.showPoolBalance toggle to the pool-balance
+// series + its left price scale. Called from `bindPoolBalanceToggle`
+// (on user click) and at end of `populateBankChart` (when a new bundle
+// is loaded, to honor the persisted preference).
+function applyPoolBalanceVisibility() {
+  const show = state.showPoolBalance === true;
+  if (state.poolBalanceSeries) {
+    state.poolBalanceSeries.applyOptions({ visible: show });
+  }
+  if (state.bankChart) {
+    state.bankChart.priceScale("left").applyOptions({ visible: show });
+  }
+  const btn = document.getElementById("toggle-pool-balance-btn");
+  if (btn) {
+    btn.textContent = show ? "Hide pool balance" : "Show pool balance";
+    btn.classList.toggle("active", show);
+  }
+}
+
+function bindPoolBalanceToggle() {
+  const btn = document.getElementById("toggle-pool-balance-btn");
+  if (!btn || btn._poolBalanceBound) return;
+  btn._poolBalanceBound = true;
+  btn.addEventListener("click", () => {
+    state.showPoolBalance = !state.showPoolBalance;
+    try { localStorage.setItem("dash.showPoolBalance", String(state.showPoolBalance)); }
+    catch {}
+    applyPoolBalanceVisibility();
+  });
+}
+
 function populateBankChart(b) {
   const firstCandle = b.candles_m15?.[0]?.t;
   const econ = state._investorEcon;
@@ -2304,6 +2352,12 @@ function populateBankChart(b) {
   } else if (state.peakUnderwaterLine) {
     state.peakUnderwaterLine.setData([]);
   }
+
+  // Wire the pool-balance show/hide button (idempotent) and apply the
+  // persisted preference so the chart respects the user's prior choice
+  // immediately on bundle load.
+  bindPoolBalanceToggle();
+  applyPoolBalanceVisibility();
 
   // Peak-loss reference: horizontal line at the deepest underwater point
   const minPnl = Math.min(...cleanPnl.map(p => p.value));

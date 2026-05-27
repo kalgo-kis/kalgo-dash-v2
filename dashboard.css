@@ -725,6 +725,14 @@ header .subtitle {
   color: var(--text);
 }
 .chart-toggle-btn:active { transform: translateY(1px); }
+/* When the toggle is currently ON (e.g. pool balance overlay is visible),
+ * tint the border to match the series color so the button visibly
+ * advertises "the thing I control is currently shown". */
+.chart-toggle-btn.active {
+  background: rgba(86, 212, 221, 0.12);
+  border-color: #56d4dd;
+  color: var(--text);
+}
 
 .dot {
   display: inline-block;
