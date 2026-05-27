@@ -274,14 +274,21 @@ function renderBundle(b) {
   const econ = computeInvestorEconomics(accounts, startingCap, stakePerAcct);
   state._investorEcon = econ;
 
-  // Investor Return: total_distributed / total_called
+  // Investor Return: total_distributed / total_called (paid-in)
   if (econ) {
     const invReturn = econ.totals.returnOnCalled;
     const prEl = document.getElementById("hdr-poolreturn");
     prEl.textContent = fmtNum(invReturn, 2) + "x";
     prEl.className = "metric-value " + (invReturn >= 1.0 ? "green" : "red");
+    // Sub-line now distinguishes the two amounts the operator asked
+    // about: NET paid-in (capped at commitment, never exceeds
+    // startingCapital) and GROSS deployed (cumulative flows including
+    // recycled distributions).
+    const grossNote = (econ.totals.totalGrossDeployed > econ.totals.totalCalled)
+      ? `, ${fmtMoney(econ.totals.totalGrossDeployed)} gross deployed`
+      : "";
     document.getElementById("hdr-poolreturn-sub").textContent =
-      `${fmtMoney(econ.totals.totalCalled)} called \u2192 ${fmtMoney(econ.totals.totalDistributed)} returned`;
+      `${fmtMoney(econ.totals.totalCalled)} paid-in \u2192 ${fmtMoney(econ.totals.totalDistributed)} returned${grossNote}`;
 
     // Capital Efficiency: % of commitment actually called
     const capEff = econ.totals.capitalEfficiency;
@@ -1269,17 +1276,24 @@ function computeInvestorEconomics(accounts, startingCapital, stakePerAccount) {
   const stake = stakePerAccount || (ordered[0]?.stake || 1000);
 
   let operatingCash = 0;
+  // Two "called" concepts. `totalCalled` is NET (capped at the
+  // commitment): the cumulative new money the investor has put in
+  // beyond their starting commitment. By definition this never exceeds
+  // `startingCapital`. `totalGrossDeployed` is the gross cumulative
+  // pool→account flow: distributions that get recycled into later
+  // deploys count again. Operator caught on 2026-05-26 that the
+  // headline "$5,000 called → $9,020 returned" felt capped — they
+  // expected the gross flow ($17,300 on that bundle) to be visible too.
   let totalCalled = 0;
+  let totalGrossDeployed = 0;
   let totalDistributed = 0;
   let remainingCommitment = startingCapital;
   // Track the worst-case CUMULATIVE deficit between calls and distributions.
   // peakUnderwater = max(totalCalled − totalDistributed) over the run. This
   // is the "capital the investor actually had at risk at the worst moment" —
-  // distinct from totalCalled (cumulative gross), which is bigger when
-  // distributions get re-called into later deploys. Operator caught on
-  // 2026-05-26: on a 6-account run, totalCalled was $5000 (full commitment)
-  // but peakUnderwater was only $3189 — distributions from A4 fully refunded
-  // earlier calls and were partially re-called for A5.
+  // distinct from totalCalled (capped at commitment) and totalGrossDeployed
+  // (uncapped). On the same 6-account bundle: peakUnderwater = $3,189,
+  // totalCalled = $5,000, totalGrossDeployed = $17,300.
   let peakUnderwater = 0;
 
   const enriched = ordered.map((a, i) => {
@@ -1288,10 +1302,15 @@ function computeInvestorEconomics(accounts, startingCapital, stakePerAccount) {
     const net = a.net || 0;
     const residual = net - extracted + acctStake; // net = extracted - stake + residual
 
-    // Capital call: how much new investor money needed?
+    // Two distinct "amount called" concepts. `shortfall` is the total
+    // capital this deploy needs to come from somewhere. `capitalCall`
+    // (capped at remainingCommitment) is the NET new money from the
+    // investor. `totalGrossDeployed` counts the full shortfall every
+    // time, which includes the part funded by recycled distributions.
     const shortfall = Math.max(0, acctStake - operatingCash);
     const capitalCall = Math.min(shortfall, remainingCommitment);
     totalCalled += capitalCall;
+    totalGrossDeployed += shortfall;
     remainingCommitment -= capitalCall;
     // Sample the deficit AFTER the call but BEFORE any distribution from
     // this cycle (i.e., the moment the investor's outflows are at their
@@ -1330,7 +1349,9 @@ function computeInvestorEconomics(accounts, startingCapital, stakePerAccount) {
       totalCalled: Math.round(totalCalled * 100) / 100,
       totalDistributed: Math.round(totalDistributed * 100) / 100,
       investorProfit: Math.round(profit * 100) / 100,
-      // Return on cumulative gross called — pre-existing metric.
+      // Return on NEW investor money paid in — TVPI on commitment.
+      // This metric reflects the LP-style "how much did the strategy
+      // return per dollar the investor had to commit".
       returnOnCalled: totalCalled > 0 ? totalDistributed / totalCalled : 0,
       capitalEfficiency: startingCapital > 0 ? totalCalled / startingCapital : 0,
       unusedCommitment: Math.round(remainingCommitment * 100) / 100,
@@ -1340,6 +1361,13 @@ function computeInvestorEconomics(accounts, startingCapital, stakePerAccount) {
       peakUnderwater: Math.round(peakUnderwater * 100) / 100,
       returnOnPeakCapital: peakUnderwater > 0 ? totalDistributed / peakUnderwater : 0,
       profitOnPeakCapital: peakUnderwater > 0 ? profit / peakUnderwater : 0,
+      // 2026-05-26 follow-up: gross cumulative deployment — every
+      // pool→account flow counts, including those funded by recycled
+      // distributions. ≥ totalCalled. Operator wanted this visible
+      // because the previous "totalCalled" cap at commitment felt
+      // artificial. Matches `bundle.metrics.total_deployed` from the
+      // broker side.
+      totalGrossDeployed: Math.round(totalGrossDeployed * 100) / 100,
     },
   };
 }

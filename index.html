@@ -111,13 +111,19 @@
         <div class="metric-label">Investor Return</div>
         <div class="metric-value" id="hdr-poolreturn">—</div>
         <div class="metric-sub" id="hdr-poolreturn-sub">—</div>
-        <div class="metric-tip">total_distributed / total_called. How much the investor got back for every dollar actually called. Above 1.0x = profitable. <em>Note:</em> total_called is the CUMULATIVE sum of capital calls (calls re-deployed after distributions are counted again). See &ldquo;Peak Capital at Risk&rdquo; for the maximum simultaneously-outstanding amount.</div>
+        <div class="metric-tip">
+          total_distributed / paid-in. How much the investor got back for every dollar of NEW money put in. Above 1.0x = profitable.<br><br>
+          <strong>Three different &ldquo;amount called&rdquo; numbers</strong>, all visible:<br>
+          &bull; <strong>Paid-in</strong> (sub-line, leftmost): max new money from the investor &mdash; <em>capped at the commitment</em>. The starting commitment ($5,000 default) is the most new money the investor can ever be on the hook for.<br>
+          &bull; <strong>Gross deployed</strong> (sub-line, rightmost): cumulative pool&rarr;account flows over the run. Distributions that get recycled into later deploys count again, so this can exceed the commitment.<br>
+          &bull; <strong>Peak Capital at Risk</strong> (separate tile): the largest deficit at any <em>single moment</em>. Distributions returned between calls reduce the simultaneous outflow, so peak &le; paid-in.
+        </div>
       </div>
       <div class="metric has-tip" id="fs-peakcapital">
         <div class="metric-label">Peak Capital at Risk</div>
         <div class="metric-value" id="hdr-peakcapital">—</div>
         <div class="metric-sub" id="hdr-peakcapital-sub">—</div>
-        <div class="metric-tip">The largest cumulative deficit between calls and distributions at any single moment — i.e. the most the investor ever had simultaneously deployed. Distributions returned between calls reduce the simultaneous deficit, so this is &le; total_called. The sub-line shows return on peak capital = total_distributed / peak_underwater (a more flattering &ldquo;return on capital actually risked&rdquo; reading).</div>
+        <div class="metric-tip">The largest cumulative deficit between calls and distributions at any single moment &mdash; i.e. the most the investor ever had simultaneously deployed. Distributions returned between calls reduce the simultaneous deficit. The sub-line shows return on peak capital = total_distributed / peak_underwater (a more flattering &ldquo;return on capital actually risked&rdquo; reading).</div>
       </div>
       <div class="metric has-tip" id="fs-expectancy">
         <div class="metric-label">Expectancy</div>
