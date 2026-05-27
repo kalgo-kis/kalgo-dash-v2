@@ -552,9 +552,14 @@ function buildComplianceRows(bundle) {
     // T6 (2026-05-25): also track the basket cycle's entry list so we can
     // compute WAPP at close time and validate the basket TP rule
     // (schedule-synced or break-even floor per spec §6).
+    // `openRegime`: latched on the basket's first entry and reused for
+    // the basket's whole life — mirrors the engine's B186 open-time
+    // config latch. The in-flight basket follows its open-time regime
+    // even if the account graduates to MODERATE/AGGRESSIVE mid-cycle;
+    // only the NEXT basket picks up the new regime.
     const state = {
-      buy:  { depth: 0, lastPrice: null, openRows: [], entries: [] },
-      sell: { depth: 0, lastPrice: null, openRows: [], entries: [] },
+      buy:  { depth: 0, lastPrice: null, openRows: [], entries: [], openRegime: null },
+      sell: { depth: 0, lastPrice: null, openRows: [], entries: [], openRegime: null },
     };
 
     for (const ev of events) {
@@ -576,12 +581,20 @@ function buildComplianceRows(bundle) {
         // (the gap can span several levels). Lot is still tier-correct;
         // skip only the spacing check for these.
         const isReAnchor = tagLower.endsWith("_reanchor");
-        // T6 multi-regime: pick the schedule view for the active regime
-        // at this entry's time. CONSERVATIVE → affine schedule; MODERATE
-        // / AGGRESSIVE → SB FlexGrid tier-based. The compliance panel
-        // applies the right rule for the regime the engine was actually
-        // running in when this entry fired.
-        const regimeName = _regimeAtTime(regimeTimeline, ev.time);
+        // T6 multi-regime + B186 latch: pick the schedule view for the
+        // BASKET'S OPEN-TIME regime, not the entry's time regime. The
+        // engine latches the basket's GridConfig at its first fill;
+        // subsequent entries in that basket cycle follow the open-time
+        // rules even if the account graduates to MODERATE/AGGRESSIVE
+        // mid-cycle. Checking each entry against its current-time
+        // regime was the false-positive class on A1.B186 of seed 0:
+        // basket opened CONSERVATIVE (AFFINE), reached depth 28 while
+        // account migrated to MODERATE — entries STILL followed AFFINE,
+        // but the compliance check expected MODERATE FlexGrid spacing.
+        if (depth === 0) {
+          s.openRegime = _regimeAtTime(regimeTimeline, ev.time);
+        }
+        const regimeName = s.openRegime || _regimeAtTime(regimeTimeline, ev.time);
         const view = viewFor(regimeName);
         const tiers = view.tiers;
         const t6 = view.t6;
@@ -711,12 +724,10 @@ function buildComplianceRows(bundle) {
         const s = state[sideKey];
         const reason = (c.reason || "").toLowerCase();
 
-        // T6 multi-regime: pick the active-regime view at close time
-        // (basket can only be in one regime — the one when it opened,
-        // since regime swaps happen at basket-close boundaries and
-        // affect the NEXT basket). Use the regime active at close
-        // time; for a close it equals the regime that drove the basket.
-        const closeRegime = _regimeAtTime(regimeTimeline, ev.time);
+        // B186 latch: the basket evaluated TP against its open-time
+        // config (which is locked to the open-time regime). Use the
+        // basket's open_regime for the TP rule lookup.
+        const closeRegime = s.openRegime || _regimeAtTime(regimeTimeline, ev.time);
         const closeView = viewFor(closeRegime);
         const t6 = closeView.t6;
         const isTwoPhaseTP = closeView.isTwoPhaseTP;
@@ -795,6 +806,7 @@ function buildComplianceRows(bundle) {
         s.depth = 0;
         s.lastPrice = null;
         s.entries = [];
+        s.openRegime = null;
       }
     }
 
